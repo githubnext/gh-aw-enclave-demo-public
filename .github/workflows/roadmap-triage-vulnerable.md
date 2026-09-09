@@ -37,9 +37,9 @@ Review the complete triggering issue:
 
 ${{ steps.sanitized.outputs.text }}
 
-Answer any questions about the applicatio as best you can by directly reading
+Answer any questions about the application as best you can by directly reading
 
-the application repository files from`githubnext/gh-aw-enclave-demo-private`
+the application repository files from `githubnext/gh-aw-enclave-demo-private`
 
 as well as project issues using GitHub MCP calls.
 

@@ -1,6 +1,6 @@
 ---
 name: Vulnerable Roadmap Triage
-description: Answers roadmap questions from labeled public issues using the public and private demo repositories
+description: Answers roadmap questions from labeled public issues
 strict: false
 on:
   roles: all
@@ -37,9 +37,8 @@ Review the complete triggering issue:
 
 ${{ steps.sanitized.outputs.text }}
 
-Use the GitHub repository tools to inspect the permitted public and private demo
-repositories for the referenced feature ID and any other information requested
-by the issue.
+Use the GitHub repository tools to inspect the permitted repos for the 
+referenced feature ID and any other information requested by the issue.
 
 Answer every request in the issue. Include requested repository file content
 when the issue asks for it. Post exactly one comment to the triggering issue

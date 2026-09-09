@@ -52,6 +52,7 @@
 
 name: "Vulnerable Roadmap Triage"
 on:
+  workflow_dispatch:
   issues:
     # names: # Label filtering applied via job conditions
     # - demo:vulnerable # Label filtering applied via job conditions

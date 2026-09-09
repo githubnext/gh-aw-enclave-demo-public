@@ -24,7 +24,7 @@ sandbox:
     id: awf
     version: v0.28.14
   mcp:
-    version: v0.4.17
+    version: v0.4.20
 tools:
   github: false
 enclaves:
@@ -61,7 +61,19 @@ The library ID must match `^[a-z0-9]+(?:[._-][a-z0-9]+)*$`. The version must
 match
 `^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$`.
 
-Use `enclave_run_script` exactly once with:
+The enclave backend starts inside the sandbox and may not appear in the initial MCP
+tool inventory. Use the mounted `awf-enclave` CLI from bash even when its cached
+`--help` output omits `enclave_run_script`. Wait 45 seconds for the deferred backend
+to start; do not report the tool as missing solely because it was absent from the
+initial inventory.
+
+Then invoke the enclave exactly once by piping its JSON arguments on stdin to:
+
+```bash
+awf-enclave enclave_run_script .
+```
+
+Use these arguments:
 
 - `privateRepo`: `githubnext/gh-aw-enclave-demo-private`
 - `schema`: exactly

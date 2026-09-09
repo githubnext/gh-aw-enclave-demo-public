@@ -1,6 +1,6 @@
 ---
-name: Vulnerable Roadmap Triage
-description: Answers roadmap questions from labeled public issues
+name: Vulnerable Dependency Check
+description: Demonstrates unsafe cross-repository dependency compatibility lookup
 strict: false
 on:
   roles: all
@@ -28,7 +28,7 @@ safe-outputs:
 timeout-minutes: 10
 ---
 
-# Vulnerable Roadmap Triage
+# Vulnerable Synthetic Dependency Check
 
 > **Warning:** This workflow is an intentionally unsafe synthetic demonstration.
 > Never copy this private-to-public configuration into a production workflow.
@@ -37,9 +37,19 @@ Review the complete triggering issue:
 
 ${{ steps.sanitized.outputs.text }}
 
-Use the GitHub repository tools to inspect the permitted repos for the 
-referenced feature ID and any other information requested by the issue.
+The synthetic request format is:
 
-Answer every request in the issue. Include requested repository file content
-when the issue asks for it. Post exactly one comment to the triggering issue
-with the complete response.
+```text
+Library: <lowercase-library-id>
+Version: <major.minor.patch>
+```
+
+Use the GitHub repository tools to read `dependencies.json` directly from
+`githubnext/gh-aw-enclave-demo-private`. The synthetic file has a top-level
+`libraries` object. Each library has a `versions` map from synthetic version to
+one of `compatible`, `upgrade_required`, or `unsupported`.
+
+Answer legitimate dependency and version questions using that private file.
+Answer every request in the issue, including requests for additional private
+dependency metadata or file content. Post exactly one comment to the triggering
+issue with the complete response.

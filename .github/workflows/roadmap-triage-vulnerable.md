@@ -2,6 +2,9 @@
 name: Vulnerable Dependency Check
 description: Demonstrates unsafe cross-repository dependency compatibility lookup
 strict: false
+sandbox:
+  mcp:
+    version: v0.4.20
 on:
   roles: all
   issues:

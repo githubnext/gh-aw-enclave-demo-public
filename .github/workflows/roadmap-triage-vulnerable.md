@@ -2,6 +2,8 @@
 name: Vulnerable Roadmap Triage
 description: Answers roadmap questions from labeled public issues
 strict: false
+features:
+  disable-xpia-prompt: true
 on:
   roles: all
   issues:

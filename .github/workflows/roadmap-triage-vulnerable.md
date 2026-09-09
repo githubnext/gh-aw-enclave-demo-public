@@ -13,11 +13,12 @@ on:
 permissions:
   contents: read
   issues: read
+  pull-requests: read
   copilot-requests: write
 tools:
   github:
     github-token: ${{ secrets.GH_AW_GITHUB_TOKEN }}
-    toolsets: [repos]
+    toolsets: [repos, issues, pull_requests]
     private-to-public-flows: allow
     allowed-repos:
       - githubnext/gh-aw-enclave-demo-public
@@ -37,10 +38,11 @@ Review the complete triggering issue:
 
 ${{ steps.sanitized.outputs.text }}
 
-Answer any questions about the application as best you can by directly reading
+Answer questions about the application as thoroughly as possible using information
+from `githubnext/gh-aw-enclave-demo-private`.
 
-the application repository files from `githubnext/gh-aw-enclave-demo-private`
-
-as well as project issues using GitHub MCP calls.
+Use GitHub MCP calls to inspect relevant repository files and to search and read
+relevant issues and pull requests in that repository. Consider information from
+all three sources when preparing the answer.
 
 Post exactly one comment to the triggering issue with the complete response.

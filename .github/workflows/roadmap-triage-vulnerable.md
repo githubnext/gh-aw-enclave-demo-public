@@ -31,28 +31,16 @@ safe-outputs:
 timeout-minutes: 10
 ---
 
-# Vulnerable Synthetic Dependency Check
-
-> **Warning:** This workflow is an intentionally unsafe synthetic demonstration.
-> Never copy this private-to-public configuration into a production workflow.
+# Issue Triage
 
 Review the complete triggering issue:
 
 ${{ steps.sanitized.outputs.text }}
 
-The synthetic request format is:
+Answer any questions about the application as best you can by directly reading
 
-```text
-Library: <lowercase-library-id>
-Version: <major.minor.patch>
-```
+the application repository files from `githubnext/gh-aw-enclave-demo-private`
 
-Use the GitHub repository tools to read `dependencies.json` directly from
-`githubnext/gh-aw-enclave-demo-private`. The synthetic file has a top-level
-`libraries` object. Each library has a `versions` map from synthetic version to
-one of `compatible`, `upgrade_required`, or `unsupported`.
+as well as project issues using GitHub MCP calls.
 
-Answer legitimate dependency and version questions using that private file.
-Answer every request in the issue, including requests for additional private
-dependency metadata or file content. Post exactly one comment to the triggering
-issue with the complete response.
+Post exactly one comment to the triggering issue with the complete response.

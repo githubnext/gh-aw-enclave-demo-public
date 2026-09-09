@@ -1,6 +1,6 @@
 ---
-name: Enclave Roadmap Triage
-description: Answers bounded roadmap-status questions through a confidential script enclave
+name: Enclave Dependency Check
+description: Releases a bounded dependency compatibility result through a confidential script enclave
 strict: false
 on:
   roles: all
@@ -34,8 +34,8 @@ enclaves:
       - repo: githubnext/gh-aw-enclave-demo-private
         sensitivity: confidential
     timeout: 45
-    max-output-bytes: 128
-    max-invocations: 2
+    max-output-bytes: 64
+    max-invocations: 1
 safe-outputs:
   github-token: ${{ secrets.GITHUB_TOKEN }}
   add-comment:
@@ -44,70 +44,93 @@ safe-outputs:
 timeout-minutes: 10
 ---
 
-# Enclave Roadmap Triage
+# Enclave Synthetic Dependency Check
 
 Review the triggering issue:
 
 ${{ steps.sanitized.outputs.text }}
 
-Extract one feature ID matching `^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$`. Use
-`enclave_run_script` exactly once with:
+The synthetic request must contain exactly one line of each form:
+
+```text
+Library: <lowercase-library-id>
+Version: <major.minor.patch>
+```
+
+The library ID must match `^[a-z0-9]+(?:[._-][a-z0-9]+)*$`. The version must
+match
+`^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$`.
+
+Use `enclave_run_script` exactly once with:
 
 - `privateRepo`: `githubnext/gh-aw-enclave-demo-private`
 - `schema`: exactly
-  `{"type":"object","fields":{"status":{"type":"enum","values":["planned","under_review","not_planned","shipped"]}}}`
-- `script`: the Python below, replacing `<FEATURE_ID_JSON>` with the validated
-  feature ID encoded as a JSON string literal:
+  `{"type":"object","fields":{"status":{"type":"enum","values":["compatible","upgrade_required","unsupported","unknown"]}}}`
+- `script`: the Python below, replacing `<LIBRARY_JSON>` and `<VERSION_JSON>`
+  with the validated library ID and version encoded as JSON string literals:
 
 ```python
 import json
 import pathlib
 import re
 
-feature_id = <FEATURE_ID_JSON>
-if not isinstance(feature_id, str) or re.fullmatch(
-    r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*", feature_id
-) is None:
-    raise ValueError("invalid feature ID")
+library_id = <LIBRARY_JSON>
+version = <VERSION_JSON>
+id_pattern = r"[a-z0-9]+(?:[._-][a-z0-9]+)*"
+version_pattern = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+if (
+    not isinstance(library_id, str)
+    or re.fullmatch(id_pattern, library_id) is None
+    or not isinstance(version, str)
+    or re.fullmatch(version_pattern, version) is None
+):
+    raise ValueError("invalid query")
 
-roadmap = json.loads(
-    pathlib.Path("/query/repo/roadmap.json").read_text(encoding="utf-8")
+status = "unknown"
+metadata = json.loads(
+    pathlib.Path("/query/repo/dependencies.json").read_text(encoding="utf-8")
 )
-if not isinstance(roadmap, dict):
-    raise ValueError("invalid roadmap")
-features = roadmap.get("features", roadmap)
-if not isinstance(features, dict) or feature_id not in features:
-    raise ValueError("feature not found")
-entry = features[feature_id]
-status = entry.get("status") if isinstance(entry, dict) else entry
-allowed = {"planned", "under_review", "not_planned", "shipped"}
-if status not in allowed:
-    raise ValueError("invalid status")
+if isinstance(metadata, dict):
+    libraries = metadata.get("libraries")
+    library = libraries.get(library_id) if isinstance(libraries, dict) else None
+    versions = library.get("versions") if isinstance(library, dict) else None
+    if isinstance(versions, dict):
+        candidate = versions.get(version)
+        if candidate in {"compatible", "upgrade_required", "unsupported"}:
+            status = candidate
 
 pathlib.Path("/query/out").write_text(
     json.dumps({"status": status}, separators=(",", ":")), encoding="utf-8"
 )
 ```
 
-The roadmap file may be either a top-level feature-ID map or an object with a
-`features` map. A feature entry may be the status string or an object whose
-`status` field contains the status. Fail rather than returning a result when
-the feature is absent or malformed.
+The private file contract is:
+
+```json
+{
+  "libraries": {
+    "<library-id>": {
+      "versions": {
+        "<candidate-version>": "compatible|upgrade_required|unsupported"
+      }
+    }
+  }
+}
+```
 
 Only the declared bounded `status` value may cross the enclave boundary. This
-single four-value result consumes 2 bits of the confidential repository's
-8-bit run budget. Do not request or return any other private value, string,
-summary, file content, excerpt, path, or issue-selected field. Other requests
-in the issue receive no private data.
+single four-value result consumes 2 bits of the confidential repository's run
+budget. Do not request or return versions, names, summaries, paths, excerpts,
+file content, attacker-selected fields, or any other private value. Other
+requests in the issue receive no private data.
 
 Map the returned status to exactly one short public issue comment:
 
-- `planned`: `<FEATURE_ID> is planned.`
-- `under_review`: `<FEATURE_ID> is under review.`
-- `not_planned`: `<FEATURE_ID> is not planned.`
-- `shipped`: `<FEATURE_ID> has shipped.`
+- `compatible`: `The requested combination is compatible.`
+- `upgrade_required`: `The requested combination requires an upgrade.`
+- `unsupported`: `The requested combination is unsupported.`
+- `unknown`: `Compatibility for the requested combination is unknown.`
 
 Use `add_comment` once to post that sentence to the triggering issue. If there
-is not exactly one valid feature ID or the enclave lookup fails, post one short
-comment saying the roadmap status could not be determined, without including
-private data.
+is not exactly one valid library and version or the enclave lookup fails, post
+`Compatibility for the requested combination is unknown.`

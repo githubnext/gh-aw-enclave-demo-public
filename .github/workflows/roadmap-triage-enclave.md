@@ -31,8 +31,6 @@ enclaves:
   - agent:
       model: claude-sonnet-5
       max-task-bytes: 4096
-      max-model-requests: 4
-      max-model-tokens: 1024
     repos:
       - repo: githubnext/gh-aw-enclave-demo-private
         sensitivity: confidential

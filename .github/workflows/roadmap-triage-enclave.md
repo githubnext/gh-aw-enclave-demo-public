@@ -1,6 +1,6 @@
 ---
 name: Enclave Dependency Check
-description: Releases a bounded dependency compatibility result through a confidential script enclave
+description: Releases a bounded dependency compatibility result through a confidential agent enclave
 strict: false
 on:
   roles: all
@@ -28,12 +28,15 @@ sandbox:
 tools:
   github: false
 enclaves:
-  - script:
-      max-script-bytes: 4096
+  - agent:
+      model: claude-sonnet-5
+      max-task-bytes: 4096
+      max-model-requests: 4
+      max-model-tokens: 1024
     repos:
       - repo: githubnext/gh-aw-enclave-demo-private
         sensitivity: confidential
-    timeout: 45
+    timeout: 180
     max-output-bytes: 64
     max-invocations: 1
 safe-outputs:
@@ -63,14 +66,14 @@ match
 
 The enclave backend starts inside the sandbox and may not appear in the initial MCP
 tool inventory. Use the mounted `awf-enclave` CLI from bash even when its cached
-`--help` output omits `enclave_run_script`. Wait 45 seconds for the deferred backend
+`--help` output omits `enclave_run_agent`. Wait 45 seconds for the deferred backend
 to start; do not report the tool as missing solely because it was absent from the
 initial inventory.
 
 Then invoke the enclave exactly once by piping its JSON arguments on stdin to:
 
 ```bash
-awf-enclave enclave_run_script .
+awf-enclave enclave_run_agent .
 ```
 
 Use these arguments:
@@ -78,42 +81,20 @@ Use these arguments:
 - `privateRepo`: `githubnext/gh-aw-enclave-demo-private`
 - `schema`: exactly
   `{"type":"object","fields":{"status":{"type":"enum","values":["compatible","upgrade_required","unsupported","unknown"]}}}`
-- `script`: the Python below, replacing `<LIBRARY_JSON>` and `<VERSION_JSON>`
-  with the validated library ID and version encoded as JSON string literals:
+- `prompt`: the task below, replacing `<LIBRARY>` and `<VERSION>` with the
+  validated values:
 
-```python
-import json
-import pathlib
-import re
+```text
+Read dependencies.json from the current read-only repository checkout. Look up
+libraries.<LIBRARY>.versions.<VERSION>.
 
-library_id = <LIBRARY_JSON>
-version = <VERSION_JSON>
-id_pattern = r"[a-z0-9]+(?:[._-][a-z0-9]+)*"
-version_pattern = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
-if (
-    not isinstance(library_id, str)
-    or re.fullmatch(id_pattern, library_id) is None
-    or not isinstance(version, str)
-    or re.fullmatch(version_pattern, version) is None
-):
-    raise ValueError("invalid query")
+Return exactly one object matching the supplied schema. Set status to the stored
+value only when it is exactly compatible, upgrade_required, or unsupported.
+Otherwise, including a missing file, malformed JSON, invalid contract, missing
+library, or missing version, return {"status":"unknown"}.
 
-status = "unknown"
-metadata = json.loads(
-    pathlib.Path("/query/repo/dependencies.json").read_text(encoding="utf-8")
-)
-if isinstance(metadata, dict):
-    libraries = metadata.get("libraries")
-    library = libraries.get(library_id) if isinstance(libraries, dict) else None
-    versions = library.get("versions") if isinstance(library, dict) else None
-    if isinstance(versions, dict):
-        candidate = versions.get(version)
-        if candidate in {"compatible", "upgrade_required", "unsupported"}:
-            status = candidate
-
-pathlib.Path("/query/out").write_text(
-    json.dumps({"status": status}, separators=(",", ":")), encoding="utf-8"
-)
+Do not return library names, versions, paths, file contents, summaries, or any
+other repository information.
 ```
 
 The private file contract is:

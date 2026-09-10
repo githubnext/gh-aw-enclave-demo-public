@@ -773,6 +773,13 @@ jobs:
                   "GITHUB_TOKEN": "\${GITHUB_TOKEN}",
                   "GITHUB_WORKSPACE": "\${GITHUB_WORKSPACE}",
                   "RUNNER_TEMP": "\${RUNNER_TEMP}"
+                },
+                "guard-policies": {
+                  "write-sink": {
+                    "accept": [
+                      "private:githubnext/gh-aw-enclave-demo-private"
+                    ]
+                  }
                 }
               }
             },

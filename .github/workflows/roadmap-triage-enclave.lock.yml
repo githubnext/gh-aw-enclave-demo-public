@@ -815,7 +815,7 @@ jobs:
           GH_AW_MCP_CONFIG_aa72059cf55d48dd_EOF
       - name: Mount MCP servers as CLIs
         id: mount-mcp-clis
-        continue-on-error: true
+        continue-on-error: false
         env:
           MCP_GATEWAY_DOMAIN: ${{ steps.start-mcp-gateway.outputs.gateway-domain }}
           MCP_GATEWAY_PORT: ${{ steps.start-mcp-gateway.outputs.gateway-port }}
@@ -823,9 +823,53 @@ jobs:
         with:
           script: |
             const path = require('path');
+            const crypto = require('crypto');
+            const fs = require('fs');
             const actionsDir = path.join(process.env.RUNNER_TEMP, 'gh-aw', 'actions');
             const { setupGlobals } = require(path.join(actionsDir, 'setup_globals.cjs'));
             setupGlobals(core, github, context, exec, io);
+            const bridgePath = path.join(actionsDir, 'mcp_cli_bridge.cjs');
+            const bridgeSource = fs.readFileSync(bridgePath, 'utf8').replace(/\r\n/g, '\n');
+            const expectedBridgeSha256 = 'a67b368502dbd098165db71b8de71daf0ddb566bfbc05d116b7b2906dee39d30';
+            const actualBridgeSha256 = crypto.createHash('sha256').update(bridgeSource).digest('hex');
+            if (actualBridgeSha256 !== expectedBridgeSha256) {
+              throw new Error(`Refusing to patch unexpected mcp_cli_bridge.cjs: ${actualBridgeSha256}`);
+            }
+            const staleCacheAnchor = '  const tools = ensureSafeOutputsTools(loadTools(toolsFile), serverName, toolsFile);';
+            const staleCacheMatches = bridgeSource.split(staleCacheAnchor).length - 1;
+            if (staleCacheMatches !== 1) {
+              throw new Error(`Expected exactly one stale MCP tool-cache anchor, found ${staleCacheMatches}`);
+            }
+            const refreshedBridgeSource = bridgeSource.replace(staleCacheAnchor, `  let tools = ensureSafeOutputsTools(loadTools(toolsFile), serverName, toolsFile);
+              if (serverName === "awf-enclave" && tools.length === 0) {
+                core.info("[awf-enclave] Cached tool inventory is empty; refreshing from the gateway");
+                const sessionId = await mcpInitialize(serverUrl, apiKey, serverName);
+                await mcpNotifyInitialized(serverUrl, apiKey, sessionId, serverName);
+                const headers = { Authorization: apiKey };
+                if (sessionId) {
+                  headers["Mcp-Session-Id"] = sessionId;
+                }
+                const response = await httpPostJSON(
+                  serverUrl,
+                  headers,
+                  { jsonrpc: "2.0", id: 2, method: "tools/list" },
+                  DEFAULT_HTTP_TIMEOUT_MS
+                );
+                const messages = extractJSONRPCMessages(response.body);
+                const resultMessage = messages.find(message =>
+                  message && typeof message === "object" &&
+                  "result" in message && message.result &&
+                  typeof message.result === "object"
+                );
+                const liveTools = resultMessage && "tools" in resultMessage.result &&
+                  Array.isArray(resultMessage.result.tools) ? resultMessage.result.tools : [];
+                if (!liveTools.some(tool => tool && typeof tool === "object" && tool.name === "enclave_run_agent")) {
+                  throw new Error("[awf-enclave] live tools/list did not return enclave_run_agent");
+                }
+                tools = liveTools;
+                core.info(\`[awf-enclave] Refreshed live tool inventory (\${tools.length} tools)\`);
+              }`);
+            fs.writeFileSync(bridgePath, refreshedBridgeSource);
             const { main } = require(path.join(actionsDir, 'mount_mcp_as_cli.cjs'));
             await main();
       - name: Clean credentials

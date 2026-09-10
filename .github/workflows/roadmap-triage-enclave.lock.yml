@@ -715,21 +715,18 @@ jobs:
           "$GH_AW_NODE" - "${RUNNER_TEMP}/gh-aw/actions/check_mcp_servers.sh" <<'GH_AW_PATCH_MCP_CHECKER_EOF'
           const fs = require("fs");
           const checkerPath = process.argv[2];
-          const source = fs.readFileSync(checkerPath, "utf8");
-          const needle = `  if echo "$SERVER_CONFIG" | jq -e '.headers.Authorization' >/dev/null 2>&1; then
-            AUTH_HEADER=$(echo "$SERVER_CONFIG" | jq -r '.headers.Authorization' 2>/dev/null)
-          fi
-          `;
-          const replacement = `${needle}
-            if [ "$SERVER_NAME" = "github" ]; then
-              AUTH_HEADER="$AWF_ENCLAVE_GITHUB_MCP_AGENT_ID"
-            fi
-          `;
-          if (source.split(needle).length !== 2) {
-            throw new Error("Pinned MCP connectivity checker authentication block changed");
+          const source = fs.readFileSync(checkerPath, "utf8").replace(/\r\n/g, "\n");
+          const assignmentPattern = /^(([ \t]*)AUTH_HEADER=\$\(echo[ \t]+"\$SERVER_CONFIG"[ \t]*\|[ \t]*jq[ \t]+-r[ \t]+'\.headers\.Authorization'[ \t]+2>\/dev\/null\))[ \t]*$/gm;
+          const matches = [...source.matchAll(assignmentPattern)];
+          if (matches.length !== 1) {
+            throw new Error(`Expected exactly one MCP checker Authorization assignment, found ${matches.length}`);
           }
-          fs.writeFileSync(checkerPath, source.replace(needle, replacement));
+          const patched = source.replace(assignmentPattern, (_match, assignment, indent) =>
+            `${assignment}\n${indent}if [ "$SERVER_NAME" = "github" ]; then\n${indent}  AUTH_HEADER="$AWF_ENCLAVE_GITHUB_MCP_AGENT_ID"\n${indent}fi`
+          );
+          fs.writeFileSync(checkerPath, patched);
           GH_AW_PATCH_MCP_CHECKER_EOF
+          bash -n "${RUNNER_TEMP}/gh-aw/actions/check_mcp_servers.sh"
           cat << GH_AW_MCP_CONFIG_aa72059cf55d48dd_EOF | "$GH_AW_NODE" "${RUNNER_TEMP}/gh-aw/actions/start_mcp_gateway.cjs"
           {
             "mcpServers": {

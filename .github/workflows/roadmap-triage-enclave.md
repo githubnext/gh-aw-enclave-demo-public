@@ -106,22 +106,56 @@ Before invoking the enclave:
    bodies, excerpts, summaries, or other repository content that would need a
    string field.
 
+5. Keep the schema inside the enclave's per-run information budget. This is a
+   hard limit that is enforced before the enclave agent ever runs, and it is
+   the constraint most likely to reject an otherwise valid schema.
+
+   Every accepted invocation is charged `1 + ceil(log2(C)) + 4` bits, where
+   `C` is the schema's total cardinality — the number of distinct responses it
+   can express. The fixed `1 + 4` bits cover the ok/error status bit and the
+   response-timing bucket, so **5 bits are spent before any field is
+   declared**. This repository's enclave repo is `confidential`, which is
+   allotted **8 bits per run**. The schema must therefore satisfy
+   `ceil(log2(C)) <= 3`, which means **`C` must be at most 8**.
+
+   Compute `C` by multiplying the cardinality of every field: `boolean` is 2,
+   `enum` is its number of values, `integer` is `maximum - minimum + 1`,
+   `object` and `tuple` are the product of their members, and `array` is
+   `items` raised to `length`. Check this arithmetic before every call.
+
+   A single `{"type": "integer", "minimum": 0, "maximum": 100}` field has
+   cardinality 101 and costs 12 bits by itself, so confidence scores,
+   percentages, counts, ratings and version numbers can never fit and must be
+   left out entirely. Two three-value enums (`3 * 3 = 9`) are already over
+   budget.
+
+   If the charge exceeds the budget the enclave returns `{"status":"error"}`
+   with no explanation, and because `max-invocations: 1` the run has no second
+   chance. The 64-byte output limit is *not* the binding constraint: a
+   response can be far below 64 bytes and still be rejected for carrying too
+   much information.
+
    For example, a dependency-compatibility question can use:
 
    ```json
    {
      "type": "object",
      "fields": {
-       "compatible": { "type": "boolean" },
-       "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
-       "status": { "type": "enum", "values": ["compatible", "incompatible", "unknown"] }
+       "status": { "type": "enum", "values": ["compatible", "incompatible", "unknown"] },
+       "migration_needed": { "type": "boolean" }
      }
    }
    ```
 
-   A response matching that schema (e.g.
-   `{"compatible":true,"confidence":87,"status":"compatible"}`) stays well
-   under the 64-byte output limit.
+   That schema has cardinality `3 * 2 = 6`, so it is charged
+   `1 + ceil(log2(6)) + 4 = 8` bits and exactly fits the budget. A response
+   such as `{"status":"compatible","migration_needed":false}` is accepted.
+
+   Because at most 8 distinct outcomes are affordable, answer the single most
+   valuable question rather than trying to cover every part of the issue. Do
+   not widen the schema to collect extra detail. In the public comment, report
+   the parts you deliberately left out as not determinable within the
+   enclave's disclosure budget.
 
 Invoke the enclave exactly once by passing a JSON object on standard input:
 
@@ -136,8 +170,9 @@ The JSON object must contain:
 - `schema`: the finite structured response schema, in AWF's `type`/`fields`
   dialect described above — never plain JSON Schema
 
-Keep the prompt within 4096 bytes and the expected response within 64 bytes. Ask
-the enclave to return exactly one object matching the schema and nothing else.
+Keep the prompt within 4096 bytes and the expected response within 64 bytes and
+within the 8-bit information budget computed above. Ask the enclave to return
+exactly one object matching the schema and nothing else.
 
 This workflow's enclave allows only one invocation (`max-invocations: 1`), and
 an invocation is consumed even when AWF rejects the call (for example, for an

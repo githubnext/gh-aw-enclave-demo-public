@@ -88,11 +88,40 @@ Before invoking the enclave:
    tools: `list_issues` to find candidates and `issue_read` to inspect a selected
    issue. Pull-request tools are not available in the enclave; report that limitation
    rather than bypassing the enclave.
-4. Define the smallest structured response schema that can answer the question.
-   The enclave response contract permits finite values such as booleans, integers,
-   enums, tuples, arrays, and objects. Do not use free-form strings or request
-   source text, filenames, issue bodies, excerpts, summaries, or other repository
-   content.
+4. Define the smallest structured response schema that can answer the question,
+   using AWF's own finite schema dialect. **This is not JSON Schema** — do not
+   use `properties`, `required`, `additionalProperties`, or any other JSON
+   Schema keyword. An `object` node must contain exactly two keys, `type` and
+   `fields`; `fields` is a JSON object mapping each field name directly to its
+   own schema node. Every declared field is implicitly required and the
+   enclave rejects any extra field, so there is no separate `required` list.
+   Valid node types are `boolean` (`{"type": "boolean"}`), `integer`
+   (`{"type": "integer", "minimum": ..., "maximum": ...}`), `enum`
+   (`{"type": "enum", "values": [...]}` with unique values of one JSON type),
+   `tuple` (`{"type": "tuple", "items": [...]}`), `array` (`{"type": "array",
+   "items": <schema>, "length": N}` for a fixed length), and nested `object`.
+   This repository's enclave repo is `confidential`, so do not use the
+   `string` type anywhere in the schema — free-form strings are reserved for
+   `trusted` repositories only. Do not request source text, filenames, issue
+   bodies, excerpts, summaries, or other repository content that would need a
+   string field.
+
+   For example, a dependency-compatibility question can use:
+
+   ```json
+   {
+     "type": "object",
+     "fields": {
+       "compatible": { "type": "boolean" },
+       "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+       "status": { "type": "enum", "values": ["compatible", "incompatible", "unknown"] }
+     }
+   }
+   ```
+
+   A response matching that schema (e.g.
+   `{"compatible":true,"confidence":87,"status":"compatible"}`) stays well
+   under the 64-byte output limit.
 
 Invoke the enclave exactly once by passing a JSON object on standard input:
 
@@ -104,10 +133,20 @@ The JSON object must contain:
 
 - `privateRepo`: `githubnext/gh-aw-enclave-demo-private`
 - `prompt`: the focused repository-research task
-- `schema`: the finite structured response schema
+- `schema`: the finite structured response schema, in AWF's `type`/`fields`
+  dialect described above — never plain JSON Schema
 
 Keep the prompt within 4096 bytes and the expected response within 64 bytes. Ask
 the enclave to return exactly one object matching the schema and nothing else.
+
+This workflow's enclave allows only one invocation (`max-invocations: 1`), and
+an invocation is consumed even when AWF rejects the call (for example, for an
+invalid schema) or the request otherwise errors. Get the `privateRepo`,
+`prompt`, and `schema` correct before calling `enclave_run_agent` and submit
+that single call deliberately. Do not call it speculatively, do not retry
+after an error, and do not attempt a second call to fix a mistake — no retry
+is possible and the workflow will not be able to use the enclave for the rest
+of the run.
 
 After the call, accept repository-derived evidence only from an `ok` response
 whose `result` matches the schema. Translate that bounded result into the public

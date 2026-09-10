@@ -725,6 +725,29 @@ jobs:
 
           mkdir -p "$HOME/.copilot"
           GH_AW_NODE=$(which node 2>/dev/null || command -v node 2>/dev/null || echo node)
+          # Generated-lock-only diagnostic for github/gh-aw#59826.
+          # The pinned check_mcp_servers.sh probes every gateway route with the primary
+          # MCP_GATEWAY_AGENT_ID. This workflow delegates GitHub to a static enclave, so the
+          # primary identity is intentionally denied /mcp/github and the gateway answers
+          # HTTP 400 "no server available", which the checker reports as a startup-critical
+          # backend failure. Make the probe identity-aware: only SERVER_NAME=github switches
+          # to AWF_ENCLAVE_GITHUB_MCP_AGENT_ID; every other server keeps the primary identity.
+          # Fail closed if the pinned checker shape drifts, then re-validate shell syntax.
+          "$GH_AW_NODE" - "${RUNNER_TEMP}/gh-aw/actions/check_mcp_servers.sh" <<'GH_AW_PATCH_MCP_CHECKER_EOF'
+          const fs = require("fs");
+          const checkerPath = process.argv[2];
+          const source = fs.readFileSync(checkerPath, "utf8").replace(/\r\n/g, "\n");
+          const assignmentPattern = /^(([ \t]*)AUTH_HEADER=\$\(echo[ \t]+"\$SERVER_CONFIG"[ \t]*\|[ \t]*jq[ \t]+-r[ \t]+'\.headers\.Authorization'[ \t]+2>\/dev\/null\))[ \t]*$/gm;
+          const matches = [...source.matchAll(assignmentPattern)];
+          if (matches.length !== 1) {
+            throw new Error(`Expected exactly one MCP checker Authorization assignment, found ${matches.length}`);
+          }
+          const patched = source.replace(assignmentPattern, (_match, assignment, indent) =>
+            `${assignment}\n${indent}if [ "$SERVER_NAME" = "github" ]; then\n${indent}  AUTH_HEADER="$AWF_ENCLAVE_GITHUB_MCP_AGENT_ID"\n${indent}fi`
+          );
+          fs.writeFileSync(checkerPath, patched);
+          GH_AW_PATCH_MCP_CHECKER_EOF
+          bash -n "${RUNNER_TEMP}/gh-aw/actions/check_mcp_servers.sh"
           cat << GH_AW_MCP_CONFIG_0f2c7aa2dd53fda6_EOF | "$GH_AW_NODE" "${RUNNER_TEMP}/gh-aw/actions/start_mcp_gateway.cjs"
           {
             "mcpServers": {
@@ -813,7 +836,9 @@ jobs:
           GH_AW_MCP_CONFIG_0f2c7aa2dd53fda6_EOF
       - name: Mount MCP servers as CLIs
         id: mount-mcp-clis
-        continue-on-error: true
+        # Generated-lock-only diagnostic for github/gh-aw#59826: the bridge patch below must
+        # fail the job if the pinned bridge drifts, so this step can no longer swallow errors.
+        continue-on-error: false
         env:
           MCP_GATEWAY_DOMAIN: ${{ steps.start-mcp-gateway.outputs.gateway-domain }}
           MCP_GATEWAY_PORT: ${{ steps.start-mcp-gateway.outputs.gateway-port }}
@@ -821,9 +846,66 @@ jobs:
         with:
           script: |
             const path = require('path');
+            const crypto = require('crypto');
+            const fs = require('fs');
             const actionsDir = path.join(process.env.RUNNER_TEMP, 'gh-aw', 'actions');
             const { setupGlobals } = require(path.join(actionsDir, 'setup_globals.cjs'));
             setupGlobals(core, github, context, exec, io);
+            // Generated-lock-only diagnostic for github/gh-aw#59826.
+            // "awf-enclave" is a deferred server: its backend is started by AWF only after this
+            // mount step runs, so mount_mcp_as_cli.cjs caches an empty tools.json and the pinned
+            // bridge permanently reports "Showing top-level help (0 tools)". Teach the bridge to
+            // refresh an empty inventory for that one deferred server at invocation time, through
+            // the same authenticated gateway route and agent ID the wrapper already embeds. The
+            // existing tools/call contract is untouched. Fail closed on unexpected bridge drift.
+            const bridgePath = path.join(actionsDir, 'mcp_cli_bridge.cjs');
+            const bridgeSource = fs.readFileSync(bridgePath, 'utf8').replace(/\r\n/g, '\n');
+            const expectedBridgeSha256 = 'a67b368502dbd098165db71b8de71daf0ddb566bfbc05d116b7b2906dee39d30';
+            const actualBridgeSha256 = crypto.createHash('sha256').update(bridgeSource).digest('hex');
+            if (actualBridgeSha256 !== expectedBridgeSha256) {
+              throw new Error(`Refusing to patch unexpected mcp_cli_bridge.cjs: ${actualBridgeSha256}`);
+            }
+            const staleCacheAnchor = '  const tools = ensureSafeOutputsTools(loadTools(toolsFile), serverName, toolsFile);';
+            const staleCacheMatches = bridgeSource.split(staleCacheAnchor).length - 1;
+            if (staleCacheMatches !== 1) {
+              throw new Error(`Expected exactly one stale MCP tool-cache anchor, found ${staleCacheMatches}`);
+            }
+            const refreshedBridgeSource = bridgeSource.replace(staleCacheAnchor, `  let tools = ensureSafeOutputsTools(loadTools(toolsFile), serverName, toolsFile);
+              if (serverName === "awf-enclave" && tools.length === 0) {
+                core.info("[awf-enclave] Startup tool inventory is empty; refreshing through the gateway");
+                try {
+                  const refreshSessionId = await mcpInitialize(serverUrl, apiKey, serverName);
+                  await mcpNotifyInitialized(serverUrl, apiKey, refreshSessionId, serverName);
+                  const refreshHeaders = { Authorization: apiKey };
+                  if (refreshSessionId) {
+                    refreshHeaders["Mcp-Session-Id"] = refreshSessionId;
+                  }
+                  const refreshResponse = await httpPostJSON(
+                    serverUrl,
+                    refreshHeaders,
+                    { jsonrpc: "2.0", id: 2, method: "tools/list" },
+                    DEFAULT_HTTP_TIMEOUT_MS
+                  );
+                  const refreshMessages = extractJSONRPCMessages(refreshResponse.body);
+                  const refreshResult = refreshMessages.find(message =>
+                    message && typeof message === "object" &&
+                    "result" in message && message.result &&
+                    typeof message.result === "object"
+                  );
+                  const liveTools = refreshResult && Array.isArray(refreshResult.result.tools)
+                    ? refreshResult.result.tools
+                    : [];
+                  if (liveTools.length > 0) {
+                    tools = liveTools;
+                    core.info(\`[awf-enclave] Refreshed live tool inventory (\${tools.length} tools)\`);
+                  } else {
+                    core.warning("[awf-enclave] Gateway returned no tools yet; late backend registration still pending");
+                  }
+                } catch (refreshError) {
+                  core.warning(\`[awf-enclave] Tool inventory refresh failed: \${getErrorMessage(refreshError)}\`);
+                }
+              }`);
+            fs.writeFileSync(bridgePath, refreshedBridgeSource);
             const { main } = require(path.join(actionsDir, 'mount_mcp_as_cli.cjs'));
             await main();
       - name: Clean credentials

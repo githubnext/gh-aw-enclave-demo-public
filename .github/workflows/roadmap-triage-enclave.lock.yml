@@ -712,6 +712,24 @@ jobs:
 
           mkdir -p "$HOME/.copilot"
           GH_AW_NODE=$(which node 2>/dev/null || command -v node 2>/dev/null || echo node)
+          "$GH_AW_NODE" - "${RUNNER_TEMP}/gh-aw/actions/check_mcp_servers.sh" <<'GH_AW_PATCH_MCP_CHECKER_EOF'
+          const fs = require("fs");
+          const checkerPath = process.argv[2];
+          const source = fs.readFileSync(checkerPath, "utf8");
+          const needle = `  if echo "$SERVER_CONFIG" | jq -e '.headers.Authorization' >/dev/null 2>&1; then
+            AUTH_HEADER=$(echo "$SERVER_CONFIG" | jq -r '.headers.Authorization' 2>/dev/null)
+          fi
+          `;
+          const replacement = `${needle}
+            if [ "$SERVER_NAME" = "github" ]; then
+              AUTH_HEADER="$AWF_ENCLAVE_GITHUB_MCP_AGENT_ID"
+            fi
+          `;
+          if (source.split(needle).length !== 2) {
+            throw new Error("Pinned MCP connectivity checker authentication block changed");
+          }
+          fs.writeFileSync(checkerPath, source.replace(needle, replacement));
+          GH_AW_PATCH_MCP_CHECKER_EOF
           cat << GH_AW_MCP_CONFIG_aa72059cf55d48dd_EOF | "$GH_AW_NODE" "${RUNNER_TEMP}/gh-aw/actions/start_mcp_gateway.cjs"
           {
             "mcpServers": {

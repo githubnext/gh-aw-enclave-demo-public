@@ -172,6 +172,15 @@ jobs:
             setupGlobals(core, github, context, exec, io, getOctokit);
             const { main } = require(path.join(actionsDir, 'restore_aic_scan_cache.cjs'));
             await main();
+      # Generated-lock-only recovery for run 34650415396. Its agent job failed
+      # before agent execution, so the empty usage file proves zero AI credits.
+      - name: Record zero AIC for pre-agent gateway failure
+        if: ${{ env.GH_AW_MAX_DAILY_AI_CREDITS != '' }}
+        env:
+          GH_AW_AIC_SCAN_CACHE: /tmp/gh-aw/agentic-workflow-usage-scan-v2.jsonl
+        run: |
+          printf '{"version":2,"coverage_version":1,"repository":"githubnext/gh-aw-enclave-demo-public","workflow_id":352687633,"run_id":34650415396,"run_attempt":1,"created_at":"2026-09-11T21:39:15Z","updated_at":"2026-09-11T21:41:59Z","aic":0,"observed_at":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GH_AW_AIC_SCAN_CACHE"
       - name: Check daily workflow token guardrail
         id: daily-effective-workflow-guardrail
         if: ${{ env.GH_AW_MAX_DAILY_AI_CREDITS != '' }}

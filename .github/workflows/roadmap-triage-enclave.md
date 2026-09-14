@@ -22,7 +22,7 @@ engine:
 sandbox:
   agent:
     id: awf
-    version: v0.28.14
+    version: v0.28.17
   mcp:
     version: v0.4.20
 tools:

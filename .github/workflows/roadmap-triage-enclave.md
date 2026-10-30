@@ -11,18 +11,14 @@ permissions:
   contents: read
   issues: read
   copilot-requests: write
-env:
-  GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN }}
 excluded-env:
   - GH_TOKEN
 engine:
   id: copilot
-  env:
-    GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN }}
 sandbox:
   agent:
     id: awf
-    version: v0.28.17
+    version: v0.28.20
   mcp:
     version: v0.4.20
 tools:

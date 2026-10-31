@@ -18,9 +18,6 @@ engine:
 sandbox:
   agent:
     id: awf
-    version: v0.28.20
-  mcp:
-    version: v0.4.20
 tools:
   github: false
 enclaves:

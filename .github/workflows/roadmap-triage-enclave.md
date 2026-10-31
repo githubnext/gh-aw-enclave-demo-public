@@ -13,6 +13,17 @@ permissions:
   copilot-requests: write
 excluded-env:
   - GH_TOKEN
+pre-agent-steps:
+  - name: Configure enclave repository staging credential
+    env:
+      GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN }}
+    run: |
+      if [ -z "$GH_TOKEN" ]; then
+        echo "::error::GH_AW_GITHUB_TOKEN is required to stage enclave repositories"
+        exit 1
+      fi
+      # AWF needs this on the host; excluded-env keeps it out of the primary agent.
+      printf 'GH_TOKEN=%s\n' "$GH_TOKEN" >> "$GITHUB_ENV"
 engine:
   id: copilot
 sandbox:

@@ -1,6 +1,6 @@
 ---
 name: Enclave Dependency Check
-description: Releases a bounded dependency compatibility result through a confidential agent enclave
+description: Probes public repository execution through a bounded agent enclave
 strict: false
 on:
   roles: all
@@ -38,11 +38,11 @@ enclaves:
       tools:
         github:
           allowed: [list_issues, issue_read]
-          allowed-repos: [githubnext/gh-aw-enclave-demo-private]
+          allowed-repos: [github/gh-aw-firewall]
           min-integrity: none
     repos:
-      - repo: githubnext/gh-aw-enclave-demo-private
-        sensitivity: confidential
+      - repo: github/gh-aw-firewall
+        sensitivity: public
     timeout: 180
     max-output-bytes: 64
     max-invocations: 1
@@ -60,12 +60,12 @@ Review the complete triggering issue:
 
 ${{ steps.sanitized.outputs.text }}
 
-Answer questions about the application as thoroughly as possible using information
-from `githubnext/gh-aw-enclave-demo-private`.
+Answer the triggering question using information only from the public repository
+`github/gh-aw-firewall`, within the bounded enclave response described below.
 
-Use GitHub MCP calls to inspect relevant repository files and to search and read
-relevant issues and pull requests in that repository. Consider information from
-all three sources when preparing the answer.
+Have the enclave inspect relevant files in its configured checkout and use only
+`list_issues` and `issue_read` for relevant issues in that repository. File and
+pull-request GitHub MCP tools are not available; do not bypass that restriction.
 
 Post exactly one comment to the triggering issue with the complete response.
 
@@ -104,40 +104,35 @@ Before invoking the enclave:
    (`{"type": "enum", "values": [...]}` with unique values of one JSON type),
    `tuple` (`{"type": "tuple", "items": [...]}`), `array` (`{"type": "array",
    "items": <schema>, "length": N}` for a fixed length), and nested `object`.
-   This repository's enclave repo is `confidential`, so do not use the
+   This repository's enclave repo is `public`, not `trusted`, so do not use the
    `string` type anywhere in the schema — free-form strings are reserved for
    `trusted` repositories only. Do not request source text, filenames, issue
    bodies, excerpts, summaries, or other repository content that would need a
    string field.
 
-5. Keep the schema inside the enclave's per-run information budget. This is a
-   hard limit that is enforced before the enclave agent ever runs, and it is
-   the constraint most likely to reject an otherwise valid schema.
+5. Keep the response small for this execution probe, not for a disclosure-budget
+   bypass. AWF v0.29.2 sets the `public` per-run bit budget to `null` (no finite
+   bit limit); the confidential repository's 8-bit limit does not apply here.
+   The 64-byte output limit, finite schema validation, and single-invocation
+   limit still apply.
 
    Every accepted invocation is charged `1 + ceil(log2(C)) + 4` bits, where
    `C` is the schema's total cardinality — the number of distinct responses it
    can express. The fixed `1 + 4` bits cover the ok/error status bit and the
    response-timing bucket, so **5 bits are spent before any field is
-   declared**. This repository's enclave repo is `confidential`, which is
-   allotted **8 bits per run**. The schema must therefore satisfy
-   `ceil(log2(C)) <= 3`, which means **`C` must be at most 8**.
+   declared**. This accounting does not impose an 8-bit ceiling on the public
+   target. Nevertheless, keep **`C` at most 6** for this diagnostic, preserving
+   the small response shape rather than collecting additional repository data.
 
    Compute `C` by multiplying the cardinality of every field: `boolean` is 2,
    `enum` is its number of values, `integer` is `maximum - minimum + 1`,
    `object` and `tuple` are the product of their members, and `array` is
    `items` raised to `length`. Check this arithmetic before every call.
 
-   A single `{"type": "integer", "minimum": 0, "maximum": 100}` field has
-   cardinality 101 and costs 12 bits by itself, so confidence scores,
-   percentages, counts, ratings and version numbers can never fit and must be
-   left out entirely. Two three-value enums (`3 * 3 = 9`) are already over
-   budget.
-
-   If the charge exceeds the budget the enclave returns `{"status":"error"}`
-   with no explanation, and because `max-invocations: 1` the run has no second
-   chance. The 64-byte output limit is *not* the binding constraint: a
-   response can be far below 64 bytes and still be rejected for carrying too
-   much information.
+   Leave out confidence scores, percentages, counts, ratings, version numbers,
+   and diagnostic text. Schema or execution failures can still return
+   `{"status":"error"}`, and because `max-invocations: 1` the run has no second
+   chance. Public sensitivity does not guarantee detailed failure diagnostics.
 
    For example, a dependency-compatibility question can use:
 
@@ -152,14 +147,14 @@ Before invoking the enclave:
    ```
 
    That schema has cardinality `3 * 2 = 6`, so it is charged
-   `1 + ceil(log2(6)) + 4 = 8` bits and exactly fits the budget. A response
+   `1 + ceil(log2(6)) + 4 = 8` bits, with no finite public bit ceiling. A response
    such as `{"status":"compatible","migration_needed":false}` is accepted.
 
-   Because at most 8 distinct outcomes are affordable, answer the single most
-   valuable question rather than trying to cover every part of the issue. Do
+   For this probe, answer the single most valuable question rather than trying
+   to cover every part of the issue. Do
    not widen the schema to collect extra detail. In the public comment, report
    the parts you deliberately left out as not determinable within the
-   enclave's disclosure budget.
+   diagnostic's deliberately bounded response.
 
 Invoke the enclave exactly once by passing a JSON object on standard input:
 
@@ -169,13 +164,14 @@ awf-enclave enclave_run_agent .
 
 The JSON object must contain:
 
-- `privateRepo`: `githubnext/gh-aw-enclave-demo-private`
+- `privateRepo`: `github/gh-aw-firewall` (AWF's API field name remains `privateRepo`
+  even for a public target)
 - `prompt`: the focused repository-research task
 - `schema`: the finite structured response schema, in AWF's `type`/`fields`
   dialect described above — never plain JSON Schema
 
 Keep the prompt within 4096 bytes and the expected response within 64 bytes and
-within the 8-bit information budget computed above. Ask the enclave to return
+within the six-outcome diagnostic schema described above. Ask the enclave to return
 exactly one object matching the schema and nothing else.
 
 This workflow's enclave allows only one invocation (`max-invocations: 1`), and

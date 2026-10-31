@@ -8,7 +8,8 @@ To regenerate the checked-in lock files using that compiler version:
 gh aw compile --gh-aw-ref v1.0.1
 ```
 
-The enclave workflow pins AWF v0.28.20, the minimum version required by this
-compiler for `enclaves[].agent.tools.github`. Its scoped GitHub tools use
+Both workflows use the compiler's default AWF and MCP Gateway versions rather
+than authored runtime version overrides. Generated security SHA and image digest
+pins remain in the lock files. The enclave workflow's scoped GitHub tools use
 `GH_AW_GITHUB_MCP_SERVER_TOKEN` or `GH_AW_GITHUB_TOKEN` with read access to the
 private repository; the token is not passed through the agent environment.

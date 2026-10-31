@@ -14,6 +14,59 @@ permissions:
 excluded-env:
   - GH_TOKEN
 pre-agent-steps:
+  - name: Install authenticated Docker enclave storage helper
+    env:
+      GH_HOST: github.com
+      GH_TOKEN: ${{ github.token }}
+    run: |
+      set -euo pipefail
+      test "$(id -u)" -ne 0
+      test -x /usr/bin/python3
+      test -x /usr/bin/sudo
+      test -x /usr/sbin/visudo
+      install_dir=$(mktemp -d "${RUNNER_TEMP}/awf-helper-install.XXXXXX")
+      trap 'rm -f "$install_dir/install.sh" "$install_dir/checksums.txt" "$install_dir/release-identity.txt"; rmdir "$install_dir"' EXIT
+      curl --proto '=https' --proto-redir '=https' -fsSL \
+        https://raw.githubusercontent.com/github/gh-aw-firewall/9596849bcdcefad2133ed484a97a77afd1baa038/install.sh \
+        -o "$install_dir/install.sh"
+      printf '%s  %s\n' a6f844a1f1891bc4ddbb4b95c7d5cfd994e4f61aa1210ad655b36e92128b1202 "$install_dir/install.sh" | sha256sum -c -
+      for asset in checksums.txt release-identity.txt; do
+        curl --proto '=https' --proto-redir '=https' -fsSL \
+          "https://github.com/github/gh-aw-firewall/releases/download/v0.29.4/$asset" \
+          -o "$install_dir/$asset"
+        gh attestation verify "$install_dir/$asset" --hostname github.com \
+          --repo github/gh-aw-firewall \
+          --signer-workflow github/gh-aw-firewall/.github/workflows/release.yml \
+          --cert-oidc-issuer https://token.actions.githubusercontent.com --deny-self-hosted-runners
+      done
+      checksums_sha256=$(sha256sum "$install_dir/checksums.txt" | cut -d ' ' -f1)
+      test "$checksums_sha256" = a2591185d010b1e220e3642b88d968acf79c119611f47af6c9d653a86d57a2e1
+      test "$(cat "$install_dir/release-identity.txt")" = "$checksums_sha256  refs/tags/v0.29.4"
+      # Only setup is privileged; SUDO_UID authorizes this runner's narrow helper.
+      sudo -n --preserve-env=GH_TOKEN,GH_HOST /usr/bin/env AWF_FORCE_BINARY=1 \
+        /bin/bash "$install_dir/install.sh" v0.29.4
+      /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/sudo -n -- \
+        /usr/bin/python3 -I /var/lib/awf/enclave-storage-helper.py probe 0.29.4 \
+        | /usr/bin/python3 -I -c 'import json, os, sys; p = json.load(sys.stdin); assert p == {"version": "0.29.4", "uid": os.getuid(), "maxBytes": 4 * 1024**3, "stateRoot": "/var/lib/awf/enclave-storage/" + str(os.getuid()) + "/host-state"}, p'
+  - name: Prepare public Docker enclave diagnostics
+    id: prepare-enclave-diagnostics
+    env:
+      DEBUG_RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+    run: |
+      set -euo pipefail
+      test -x /usr/bin/node
+      install_dir=$(mktemp -d "${RUNNER_TEMP}/awf-collector-install.XXXXXX")
+      trap 'rm -f "$install_dir/collector.cjs"; rmdir "$install_dir"' EXIT
+      curl --proto '=https' --proto-redir '=https' -fsSL \
+        https://raw.githubusercontent.com/github/gh-aw-firewall/9596849bcdcefad2133ed484a97a77afd1baa038/scripts/ci/collect-enclave-smoke-debug.cjs \
+        -o "$install_dir/collector.cjs"
+      printf '%s  %s\n' 7722affc5c076d79692d4268a543ef267281424ad4b374eb8f80c24cbec08cae "$install_dir/collector.cjs" | sha256sum -c -
+      sudo -n install -d -m 0711 -o root -g root /var/lib/awf-enclave-smoke-export
+      sudo -n install -m 0600 -o root -g root "$install_dir/collector.cjs" \
+        /var/lib/awf-enclave-smoke-export/collector.cjs
+      /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/sudo -n -- \
+        /usr/bin/node /var/lib/awf-enclave-smoke-export/collector.cjs \
+        prepare docker "$DEBUG_RUN_KEY" "$(id -u)" "$(id -g)"
   - name: Configure enclave repository staging credential
     env:
       GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN }}
@@ -29,6 +82,10 @@ engine:
 sandbox:
   agent:
     id: awf
+    version: v0.29.4
+    checksums-sha256: a2591185d010b1e220e3642b88d968acf79c119611f47af6c9d653a86d57a2e1
+    # gh-aw v1.0.1 needs .github/aw/inject-enclave-runtime.cjs after compilation
+    # for public-debug capture, attested image pins and the rootless bridge.
 tools:
   github: false
 enclaves:
@@ -52,6 +109,28 @@ safe-outputs:
     max: 1
     target: ${{ github.event.issue.number }}
 timeout-minutes: 10
+post-steps:
+  - name: Collect public Docker enclave diagnostics
+    id: collect-enclave-diagnostics
+    if: always() && steps.prepare-enclave-diagnostics.outcome == 'success'
+    env:
+      DEBUG_RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+      EXECUTION_OUTCOME: ${{ steps.agentic_execution.outcome }}
+    run: |
+      set -euo pipefail
+      printf 'AWF execution outcome: %s\n' "$EXECUTION_OUTCOME"
+      # AWF has returned through teardown; collection does not change its outcome.
+      /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/sudo -n -- \
+        /usr/bin/node /var/lib/awf-enclave-smoke-export/collector.cjs \
+        collect docker "$DEBUG_RUN_KEY" "$(id -u)" "$(id -g)"
+  - name: Upload validated public enclave diagnostics or safe collection status
+    if: always() && steps.prepare-enclave-diagnostics.outcome == 'success'
+    uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+    with:
+      name: public-enclave-debug-${{ github.run_id }}-${{ github.run_attempt }}
+      path: /var/lib/awf-enclave-smoke-export/${{ github.run_id }}-${{ github.run_attempt }}/upload/
+      if-no-files-found: warn
+      retention-days: 1
 ---
 
 # Issue Triage
@@ -111,7 +190,7 @@ Before invoking the enclave:
    string field.
 
 5. Keep the response small for this execution probe, not for a disclosure-budget
-   bypass. AWF v0.29.2 sets the `public` per-run bit budget to `null` (no finite
+   bypass. AWF v0.29.4 sets the `public` per-run bit budget to `null` (no finite
    bit limit); the confidential repository's 8-bit limit does not apply here.
    The 64-byte output limit, finite schema validation, and single-invocation
    limit still apply.

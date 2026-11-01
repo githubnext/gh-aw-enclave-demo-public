@@ -54,18 +54,79 @@ pre-agent-steps:
       DEBUG_RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
     run: |
       set -euo pipefail
-      test -x /usr/bin/node
       install_dir=$(mktemp -d "${RUNNER_TEMP}/awf-collector-install.XXXXXX")
-      trap 'rm -f "$install_dir/collector.cjs"; rmdir "$install_dir"' EXIT
+      trap 'rm -f "$install_dir/collector.cjs" "$install_dir/node.tar.xz"; rmdir "$install_dir"' EXIT
+      case "$(/usr/bin/uname -m)" in
+        x86_64) node_arch=x64 ;;
+        aarch64) node_arch=arm64 ;;
+        *) echo "::error::Trusted collector Node rejected: unsupported-architecture"; exit 1 ;;
+      esac
+      curl --proto '=https' --proto-redir '=https' -fsSL --max-time 120 --max-filesize 134217728 \
+        "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-${node_arch}.tar.xz" \
+        -o "$install_dir/node.tar.xz"
+      # Authenticate the exact archive bytes under root, never execute toolcache Node.
+      /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/sudo -n -- \
+        /usr/bin/python3 -I - "$install_dir/node.tar.xz" <<'PY'
+      import hashlib, io, os, stat, sys, tarfile
+
+      def reject(category):
+          sys.exit("::error::Trusted collector Node rejected: " + category)
+
+      def protected_directory(path):
+          info = os.lstat(path)
+          if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+              reject("unsafe-directory")
+
+      try:
+          pins = {
+              "x86_64": ("x64", "6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6"),
+              "aarch64": ("arm64", "dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e"),
+          }
+          if os.uname().machine not in pins:
+              reject("unsupported-architecture")
+          arch, digest = pins[os.uname().machine]
+          fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+          with os.fdopen(fd, "rb") as archive:
+              info = os.fstat(archive.fileno())
+              if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                  reject("unsafe-archive")
+              if not 0 < info.st_size <= 128 * 1024 * 1024:
+                  reject("archive-size")
+              data = archive.read(128 * 1024 * 1024 + 1)
+          if len(data) != info.st_size or hashlib.sha256(data).hexdigest() != digest:
+              reject("archive-checksum")
+          with tarfile.open(fileobj=io.BytesIO(data), mode="r:xz") as archive:
+              member = archive.getmember("node-v24.22.1-linux-" + arch + "/bin/node")
+              if not member.isfile() or not member.mode & 0o111:
+                  reject("unsafe-executable")
+              if not 0 < member.size <= 256 * 1024 * 1024:
+                  reject("executable-size")
+              executable = archive.extractfile(member).read(member.size + 1)
+              if len(executable) != member.size:
+                  reject("executable-size")
+          root = "/var/lib/awf-enclave-smoke-export"
+          for directory in ("/", "/var", "/var/lib"):
+              protected_directory(directory)
+          if not os.path.lexists(root):
+              os.mkdir(root, 0o711)
+              os.chmod(root, 0o711)
+          protected_directory(root)
+          fd = os.open(root + "/node", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o500)
+          with os.fdopen(fd, "wb") as destination:
+              destination.write(executable)
+      except OSError:
+          reject("filesystem-check")
+      except (tarfile.TarError, KeyError, EOFError):
+          reject("archive-member")
+      PY
       curl --proto '=https' --proto-redir '=https' -fsSL \
         https://raw.githubusercontent.com/github/gh-aw-firewall/9596849bcdcefad2133ed484a97a77afd1baa038/scripts/ci/collect-enclave-smoke-debug.cjs \
         -o "$install_dir/collector.cjs"
       printf '%s  %s\n' 7722affc5c076d79692d4268a543ef267281424ad4b374eb8f80c24cbec08cae "$install_dir/collector.cjs" | sha256sum -c -
-      sudo -n install -d -m 0711 -o root -g root /var/lib/awf-enclave-smoke-export
       sudo -n install -m 0600 -o root -g root "$install_dir/collector.cjs" \
         /var/lib/awf-enclave-smoke-export/collector.cjs
       /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/sudo -n -- \
-        /usr/bin/node /var/lib/awf-enclave-smoke-export/collector.cjs \
+        /var/lib/awf-enclave-smoke-export/node /var/lib/awf-enclave-smoke-export/collector.cjs \
         prepare docker "$DEBUG_RUN_KEY" "$(id -u)" "$(id -g)"
   - name: Configure enclave repository staging credential
     env:
@@ -121,7 +182,7 @@ post-steps:
       printf 'AWF execution outcome: %s\n' "$EXECUTION_OUTCOME"
       # AWF has returned through teardown; collection does not change its outcome.
       /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/sudo -n -- \
-        /usr/bin/node /var/lib/awf-enclave-smoke-export/collector.cjs \
+        /var/lib/awf-enclave-smoke-export/node /var/lib/awf-enclave-smoke-export/collector.cjs \
         collect docker "$DEBUG_RUN_KEY" "$(id -u)" "$(id -g)"
   - name: Upload validated public enclave diagnostics or safe collection status
     if: always() && steps.prepare-enclave-diagnostics.outcome == 'success'

@@ -46,7 +46,8 @@ The API selector is still named `privateRepo`, and the compiler's scoped
 write-sink label retains its `private:` prefix; neither changes the public
 runtime sensitivity. Network isolation and rootless AWF are preserved. Host
 elevation is limited to authenticated helper installation/probing and the
-upstream collector's installation, preparation and collection.
+upstream collector's authenticated interpreter installation, preparation and
+collection.
 
 The enclave workflow's scoped GitHub tools use `GH_AW_GITHUB_MCP_SERVER_TOKEN`
 or `GH_AW_GITHUB_TOKEN` with read access to the public target.
@@ -84,7 +85,32 @@ to `refs/tags/v0.29.4`, and remain rootless. All six AWF image digests are recor
 in the injection source and were verified against the release-attested
 `containers.txt` and public GHCR tags.
 
-Before execution, the workflow installs the collector root-owned, mode `0600`,
+The hosted Ubuntu 26.04 runner in
+[run 41255406408](https://github.com/githubnext/gh-aw-enclave-demo-public/actions/runs/41255406408)
+had Node v24.22.1 on PATH in `/opt/hostedtoolcache`, but no `/usr/bin/node`;
+the old preparation check failed before downloading the collector. A toolcache
+path is not a root-execution trust anchor: the official runner-image setup makes
+`/opt` writable. The workflow therefore does not execute PATH-selected Node as
+root or change toolcache ownership/permissions.
+
+Instead, preparation downloads the official **Node v24.22.1** Linux archive for
+the host's x64 or arm64 architecture from `nodejs.org`. Archive SHA-256 pins from
+the release's [SHASUMS256.txt](https://nodejs.org/dist/v24.22.1/SHASUMS256.txt) are
+`6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6` (x64) and
+`dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e` (arm64).
+Isolated host Python rechecks the exact bounded archive bytes under root, then
+extracts only its fixed regular executable member, never the archive's paths,
+links or other files. Download and archive/executable sizes are bounded.
+Root-owned, non-group/other-writable, non-symlink destination ancestry is checked
+before exclusively creating `/var/lib/awf-enclave-smoke-export/node` with mode
+`0500`. Existing bindings, unsupported architectures, checksum mismatches and
+unsafe files/directories fail explicitly with bounded category-only errors.
+Both preparation and collection use this same protected interpreter with an
+empty environment and fixed system PATH, not step outputs, runtime overrides or
+agent-writable cache content. This adds an authenticated download dependency;
+its failure prevents preparation rather than falling back to untrusted Node.
+
+Before execution, the workflow also installs the collector root-owned, mode `0600`,
 under `/var/lib/awf-enclave-smoke-export`, outside agent-writable paths, and calls
 `prepare docker RUN_ID-RUN_ATTEMPT RUNNER_UID RUNNER_GID` using the host runner's
 identity. After AWF returns through teardown, `collect` uses the same binding,
@@ -113,6 +139,13 @@ without privileged installation by pointing at the immutable downloaded script:
 AWF_COLLECTOR_PATH=/path/to/collect-enclave-smoke-debug.cjs \
   node --test .github/aw/enclave-diagnostics.test.cjs
 ```
+
+Node bootstrap tests execute the authored isolated Python against temporary
+synthetic archives and mapped protected paths without sudo. They cover both
+non-`/usr/bin` architecture layouts, archive authentication and unsafe
+links/files/ownership/permissions, and preserve the source/lock interpreter
+binding. Set `AWF_NODE_ARCHIVE_PATH` to the exact pinned x64 release archive to
+also exercise real archive authentication and extraction without execution.
 
 The fixture test verifies that script's exact SHA-256. The released upstream
 regression suite passed 181 platform-independent tests on macOS; five tests

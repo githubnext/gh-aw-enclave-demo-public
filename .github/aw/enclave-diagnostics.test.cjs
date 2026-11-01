@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { test } = require('node:test');
+const { spawnSync } = require('node:child_process');
 const { inject, images, version, checksums } = require('./inject-enclave-runtime.cjs');
 
 const base = path.resolve(__dirname, '../workflows/roadmap-triage-enclave');
@@ -107,16 +108,178 @@ test('prepare precedes AWF and collection/upload run after failure without raw p
   assert(!lock.includes('Stage approved public enclave diagnostic metadata'));
   assert(!lock.includes('awf-enclave-operator'));
   assert(!source.includes('def collect('));
-  assert(lock.includes('/usr/bin/node /var/lib/awf-enclave-smoke-export/collector.cjs'));
+  assert.equal((source.match(/\/var\/lib\/awf-enclave-smoke-export\/node \/var\/lib\/awf-enclave-smoke-export\/collector.cjs/g) || []).length, 2);
+  assert(!source.includes('/usr/bin/node'));
+  assert(!source.includes('command -v node'));
+  assert(!source.includes('steps.prepare-enclave-diagnostics.outputs'));
+});
+
+const nodeInstaller = source.match(/<<'PY'\n([\s\S]*?)^      PY$/m)[1]
+  .split('\n').map(line => line.slice(6)).join('\n');
+
+test('protected Node installation authenticates bytes without executing hosted toolcache content', () => {
+  assert(source.includes('https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-${node_arch}.tar.xz'));
+  assert(nodeInstaller.includes('6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6'));
+  assert(nodeInstaller.includes('dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e'));
+  assert(nodeInstaller.indexOf('hashlib.sha256(data)') < nodeInstaller.indexOf('tarfile.open('));
+  assert(nodeInstaller.indexOf('hashlib.sha256(data)') < nodeInstaller.indexOf('os.O_WRONLY'));
+  assert(!nodeInstaller.includes('extractall'));
+  assert(!nodeInstaller.includes('subprocess'));
+  assert(!source.includes('sudo PATH'));
+  assert.equal((source.match(/\/usr\/bin\/env -i PATH=\/usr\/bin:\/bin LANG=C LC_ALL=C \/usr\/bin\/sudo -n --/g) || []).length, 4);
+});
+
+test('isolated Node bootstrap accepts pinned layouts and rejects unsafe archives and protected paths', () => {
+  // Run the exact authored Python with real temporary files, no sudo or Linux install.
+  // Only root identity/path mapping and the synthetic archive's pinned digest are mocked.
+  const harness = `
+import hashlib, io, json, os, stat, sys, tarfile, tempfile, types
+from unittest.mock import patch
+script = ${JSON.stringify(nodeInstaller)}
+root = "/var/lib/awf-enclave-smoke-export"
+pins = {
+    "x64": "6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6",
+    "arm64": "dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e",
+}
+cases = [
+    ("x64", None), ("arm64", None), ("bad-checksum", "archive-checksum"),
+    ("symlink-archive", "filesystem-check"), ("hardlink-archive", "unsafe-archive"),
+    ("directory-archive", "filesystem-check"), ("empty-archive", "archive-size"),
+    ("large-archive", "archive-size"), ("missing-member", "archive-member"),
+    ("symlink-node", "unsafe-executable"), ("hardlink-node", "unsafe-executable"),
+    ("nonexecutable-node", "unsafe-executable"), ("large-node", "executable-size"),
+    ("wrong-owner", "unsafe-directory"), ("writable-root", "unsafe-directory"),
+    ("writable-parent", "unsafe-directory"), ("symlink-parent", "unsafe-directory"),
+    ("existing-node", "filesystem-check"), ("unsupported-arch", "unsupported-architecture"),
+]
+released_path = sys.argv[1] if len(sys.argv) > 1 else None
+if released_path:
+    cases.append(("released-x64", None))
+original_sha256 = hashlib.sha256
+original_open, original_lstat, original_mkdir = os.open, os.lstat, os.mkdir
+original_chmod, original_lexists, original_fstat = os.chmod, os.path.lexists, os.fstat
+for case, expected in cases:
+    arch = "arm64" if case == "arm64" else "x64"
+    executable = b"public synthetic executable, never executed"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:xz") as archive:
+        member = tarfile.TarInfo("node-v24.22.1-linux-" + arch + "/bin/node")
+        member.size, member.mode = len(executable), 0o755
+        if case == "missing-member":
+            member.name = "../node"
+        if case in ("symlink-node", "hardlink-node"):
+            member.type = tarfile.SYMTYPE if case == "symlink-node" else tarfile.LNKTYPE
+            member.linkname, member.size = "/untrusted/node", 0
+        if case == "nonexecutable-node":
+            member.mode = 0o644
+        archive.addfile(member, io.BytesIO(executable))
+    pinned_bytes = buffer.getvalue()
+    if case == "released-x64":
+        with open(released_path, "rb") as file:
+            pinned_bytes = file.read()
+        assert original_sha256(pinned_bytes).hexdigest() == pins["x64"]
+        with tarfile.open(fileobj=io.BytesIO(pinned_bytes), mode="r:xz") as archive:
+            executable = archive.extractfile("node-v24.22.1-linux-x64/bin/node").read()
+    with tempfile.TemporaryDirectory(prefix="awf-node-test-") as temp:
+        def mapped(path):
+            return temp + "/protected" + path if path in ("/", "/var", "/var/lib", root, root + "/node") else path
+        os.makedirs(mapped("/var/lib"), mode=0o755)
+        archive_path = temp + "/node.tar.xz"
+        with open(archive_path, "wb") as file:
+            file.write(b"changed" if case == "bad-checksum" else pinned_bytes)
+        if case == "symlink-archive":
+            os.rename(archive_path, archive_path + ".real")
+            os.symlink(archive_path + ".real", archive_path)
+        if case == "hardlink-archive":
+            os.link(archive_path, archive_path + ".link")
+        if case == "directory-archive":
+            os.unlink(archive_path)
+            os.mkdir(archive_path)
+        if case == "empty-archive":
+            with open(archive_path, "wb"):
+                pass
+        if case in ("writable-root", "existing-node"):
+            os.mkdir(mapped(root))
+        if case == "writable-root":
+            os.chmod(mapped(root), 0o777)
+        if case == "existing-node":
+            with open(mapped(root + "/node"), "wb") as file:
+                file.write(b"must not overwrite")
+        if case == "writable-parent":
+            os.chmod(mapped("/var"), 0o777)
+        if case == "symlink-parent":
+            os.rename(mapped("/var/lib"), mapped("/var/lib") + ".real")
+            os.symlink(mapped("/var/lib") + ".real", mapped("/var/lib"))
+        def lstat(path):
+            result = list(original_lstat(mapped(path)))
+            result[4] = 1001 if case == "wrong-owner" and path == "/var" else 0
+            return os.stat_result(result)
+        def digest(data):
+            if case != "released-x64" and data == pinned_bytes:
+                return types.SimpleNamespace(hexdigest=lambda: pins[arch])
+            return original_sha256(data)
+        def fstat(fd):
+            result = list(original_fstat(fd))
+            if case == "large-archive":
+                result[6] = 128 * 1024 * 1024 + 1
+            return os.stat_result(result)
+        original_getmember = tarfile.TarFile.getmember
+        def getmember(archive, name):
+            member = original_getmember(archive, name)
+            if case == "large-node":
+                member.size = 256 * 1024 * 1024 + 1
+            return member
+        machine = "aarch64" if arch == "arm64" else "x86_64"
+        if case == "unsupported-arch":
+            machine = "untrusted"
+        with patch.object(sys, "argv", ["-", archive_path]), \\
+                patch.object(os, "uname", return_value=types.SimpleNamespace(machine=machine)), \\
+                patch.object(os, "lstat", side_effect=lstat), \\
+                patch.object(os, "open", side_effect=lambda path, *args: original_open(mapped(path), *args)), \\
+                patch.object(os, "mkdir", side_effect=lambda path, mode: original_mkdir(mapped(path), mode)), \\
+                patch.object(os, "chmod", side_effect=lambda path, mode: original_chmod(mapped(path), mode)), \\
+                patch.object(os.path, "lexists", side_effect=lambda path: original_lexists(mapped(path))), \\
+                patch.object(os, "fstat", side_effect=fstat), \\
+                patch.object(hashlib, "sha256", side_effect=digest), \\
+                patch.object(tarfile.TarFile, "getmember", new=getmember):
+            try:
+                exec(compile(script, "<authored-node-bootstrap>", "exec"), {})
+            except SystemExit as error:
+                assert expected is not None, (case, str(error))
+                assert str(error) == "::error::Trusted collector Node rejected: " + expected, (case, str(error))
+                assert len(str(error)) < 128 and temp not in str(error)
+            else:
+                assert expected is None, case
+                with open(mapped(root + "/node"), "rb") as file:
+                    assert file.read() == executable
+                assert stat.S_ISREG(original_lstat(mapped(root + "/node")).st_mode)
+                assert stat.S_IMODE(original_lstat(mapped(root + "/node")).st_mode) == 0o500
+                assert stat.S_IMODE(original_lstat(mapped(root)).st_mode) == 0o711
+        if expected and case != "existing-node":
+            assert not os.path.lexists(mapped(root + "/node")), case
+        if case == "existing-node":
+            with open(mapped(root + "/node"), "rb") as file:
+                assert file.read() == b"must not overwrite"
+print(json.dumps({"cases": len(cases)}))
+`;
+  const archivePath = process.env.AWF_NODE_ARCHIVE_PATH;
+  const result = spawnSync('python3', ['-I', '-', ...(archivePath ? [path.resolve(archivePath)] : [])],
+    { input: harness, encoding: 'utf8', timeout: 30000 });
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  assert.deepEqual(JSON.parse(result.stdout), { cases: archivePath ? 20 : 19 });
 });
 
 test('authored host lifecycle scripts agree with the compiled lock', () => {
-  const authoredRuns = [...source.matchAll(/^    run: \|\n((?:      [^\n]*\n)+)/gm)]
-    .map(match => match[1].split('\n').map(line => line.slice(6)).join('\n'));
+  const authoredRuns = [...source.matchAll(/^    run: \|\n((?:(?:      [^\n]*|)\n)+)/gm)]
+    .map(match => match[1].split('\n').map(line => line.slice(6)).join('\n').trimEnd());
   const compiledRuns = [...lock.matchAll(/^        run: ("(?:[^"\\]|\\.)*")$/gm)]
-    .map(match => JSON.parse(match[1]).replace(/\n$/, ''));
+    .map(match => JSON.parse(match[1]).trimEnd());
   assert.equal(authoredRuns.length, 4);
-  for (const run of authoredRuns) assert(compiledRuns.includes(run.replace(/\n$/, '')), 'Authored host script missing from lock');
+  for (const run of authoredRuns) {
+    assert(compiledRuns.includes(run), 'Authored host script missing from lock');
+    const syntax = spawnSync('bash', ['-n'], { input: run, encoding: 'utf8', timeout: 5000 });
+    assert.equal(syntax.status, 0, syntax.stderr || syntax.error?.message);
+  }
 });
 
 test('the compiler bridge is idempotent and rejects version or compiler drift', () => {

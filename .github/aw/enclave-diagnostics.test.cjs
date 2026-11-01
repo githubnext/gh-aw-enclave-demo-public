@@ -15,6 +15,40 @@ const configs = configLines.map(line => JSON.parse(
   line.match(/printf '%s\\n' "(.*)" > /)[1]
     .replace(/\\([\\"$])/g, '$1').replace('${GH_AW_MAX_AI_CREDITS}', '1')));
 
+test('both compiled AWF installers bind step-local attestation credentials', () => {
+  const installers = [...lock.matchAll(/^      - name: Install AWF binary\n[\s\S]*?(?=^      - |(?![\s\S]))/gm)];
+  assert.equal(installers.length, 2);
+  for (const [step] of installers) {
+    assert.match(step, /^        env:\n(?:          [^\n]*\n)*          GH_TOKEN: \$\{\{ github.token \}\}$/m);
+    assert.match(step, /^        env:\n(?:          [^\n]*\n)*          GH_HOST: github\.com$/m);
+    assert(step.includes('gh attestation verify'));
+    for (const binding of ['GH_TOKEN: ${{ github.token }}', 'GH_HOST: github.com']) {
+      assert.throws(() => inject(lock.replace(step, step.replace(`          ${binding}\n`, '')), source));
+    }
+  }
+});
+
+test('fresh injection preserves existing installer environment fields', () => {
+  const compilerLock = lock
+    .replace(/^# Enclave runtime bridge:[^\n]*\n/m, '')
+    .replaceAll(String.raw`\"imageTag\":\"${configs[0].container.imageTag}\"`, String.raw`\"imageTag\":\"0.29.4\"`)
+    .replace(String.raw`\"enclaveDebugPublic\":true,`, '')
+    .replace(/^(\s+GH_AW_MCP_CLI_SERVERS_LIST: )(".*")$/m, (_, prefix, value) =>
+      prefix + JSON.stringify(JSON.parse(value).split('\n\nFor `awf-enclave enclave_run_agent`')[0]))
+    .replace(/^      - name: Install AWF binary\n[\s\S]*?(?=^      - |(?![\s\S]))/gm,
+      '      - name: Install AWF binary\n' +
+      '        env:\n' +
+      '          EXISTING_INSTALLER_ENV: preserved\n' +
+      '          GH_TOKEN: ${{ secrets.OTHER_TOKEN }}\n' +
+      '          GH_HOST: example.invalid\n' +
+      `        run: bash "\${RUNNER_TEMP}/gh-aw/actions/install_awf_binary.sh" ${version} --checksums-sha256 ${checksums} --rootless\n`);
+  const injected = inject(compilerLock, source);
+  assert.equal((injected.match(/          EXISTING_INSTALLER_ENV: preserved\n/g) || []).length, 2);
+  assert(!injected.includes('secrets.OTHER_TOKEN'));
+  assert(!injected.includes('GH_HOST: example.invalid'));
+  assert.equal(inject(injected, source), injected);
+});
+
 test('the lock preserves public policy, host-only credentials and rootless execution', () => {
   assert.equal(configs.length, 2);
   const agent = configs.find(config => config.enclaves);

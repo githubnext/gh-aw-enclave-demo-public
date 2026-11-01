@@ -26,9 +26,11 @@ Do not commit or execute the compiler's intermediate lock without injection.
 gh-aw v1.0.1 supports the authored AWF version/checksum and lifecycle steps, but
 not `enclaveDebugPublic` or the release's full image-digest selector. The narrow,
 fail-closed injection supplies those fields, reconciles the manifest and public
-prompt hint, preserves release attestation/tag binding for both rootless CLI
-installers, and fixes diagnostic retention to one day (the compiler otherwise
-allows a repository variable to override it). It does not copy the upstream
+prompt hint, binds step-local `GH_TOKEN: ${{ github.token }}` and
+`GH_HOST: github.com` for attestation verification in both rootless CLI
+installers, preserves release attestation/tag binding, and fixes diagnostic
+retention to one day (the compiler otherwise allows a repository variable to
+override it). It does not copy the upstream
 collector or its validator. Compiler-generated metadata hashes reflect the
 authored source. The workflow body is loaded from the `.md` source at runtime.
 

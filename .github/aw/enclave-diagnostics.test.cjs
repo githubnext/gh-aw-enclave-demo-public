@@ -33,7 +33,7 @@ test('fresh injection preserves existing installer environment fields', () => {
   const compilerLock = lock
     .replace(/^# Enclave runtime bridge:[^\n]*\n/m, '')
     .replaceAll(String.raw`\"imageTag\":\"${configs[0].container.imageTag}\"`, String.raw`\"imageTag\":\"${version.slice(1)}\"`)
-    .replace(String.raw`\"enclaveDebugPublic\":true,`, '')
+    .replace(String.raw`\"enclaveDebugPublic\":false,`, '')
     .replace(/^(\s+GH_AW_MCP_CLI_SERVERS_LIST: )(".*")$/m, (_, prefix, value) =>
       prefix + JSON.stringify(JSON.parse(value).split('\n\nFor `awf-enclave enclave_run_agent`')[0]))
     .replace(/^      - name: Install AWF binary\n[\s\S]*?(?=^      - |(?![\s\S]))/gm,
@@ -50,13 +50,15 @@ test('fresh injection preserves existing installer environment fields', () => {
   assert.equal(inject(injected, source), injected);
 });
 
-test('the lock preserves public policy, host-only credentials and rootless execution', () => {
+test('the lock preserves confidential policy, host-only credentials and rootless execution', () => {
   assert.equal(configs.length, 2);
   const agent = configs.find(config => config.enclaves);
-  assert.equal(agent.enclaveDebugPublic, true);
+  assert.equal(agent.enclaveDebugPublic, false);
   assert.equal(agent.network.isolation, true);
-  assert.deepEqual(agent.enclaves[0].repos, [{ repo: 'github/gh-aw-firewall', sensitivity: 'public' }]);
+  assert.deepEqual(agent.enclaves[0].repos, [{ repo: 'githubnext/gh-aw-enclave-demo-private', sensitivity: 'confidential' }]);
+  assert.deepEqual(agent.enclaves[0].agent.tools.github.allowedRepos, ['githubnext/gh-aw-enclave-demo-private']);
   assert.deepEqual(agent.enclaves[0].agent.tools.github.allowed, ['list_issues', 'issue_read']);
+  assert.equal(agent.enclaves[0].agent.tools.github.minIntegrity, 'none');
   assert.equal(agent.enclaves[0].maxInvocations, 1);
   assert.equal(agent.enclaves[0].maxOutputBytes, 64);
   assert.equal(agent.enclaves[0].agent.maxTaskBytes, 4096);
@@ -111,13 +113,29 @@ test('helper and collector use the immutable release source and authenticated ve
   }
 });
 
-test('prepare precedes AWF and collection/upload run after failure without raw publication', () => {
+test('public diagnostic preparation, collection and upload remain unconditionally disabled', () => {
   const prepare = lock.indexOf('id: prepare-enclave-diagnostics');
   const execute = lock.indexOf('id: agentic_execution');
   const collect = lock.indexOf('id: collect-enclave-diagnostics');
   assert(prepare > 0 && prepare < execute && execute < collect);
   const collection = lock.slice(collect, lock.indexOf('# Small dedicated copy', collect));
-  assert(collection.includes("if: always() && steps.prepare-enclave-diagnostics.outcome == 'success'"));
+  assert.equal((source.match(/    if: "false"\n/g) || []).length, 3);
+  assert.equal((lock.match(/(?:        |      - )if: "false"\n/g) || []).length, 3);
+  assert(!source.includes("always() && steps.prepare-enclave-diagnostics.outcome"));
+  assert(configs.every(config => config.enclaveDebugPublic !== true));
+  for (const text of [source, lock]) {
+    for (let index = 0; index < 3; index++) {
+      let seen = 0;
+      const enabled = text.replace(/if: "false"/g, match => seen++ === index ? 'if: always()' : match);
+      assert.throws(() => inject(text === lock ? enabled : lock, text === source ? enabled : source),
+        /disable public diagnostic lifecycle/);
+    }
+  }
+  assert.throws(() => inject(lock.replace(String.raw`\"enclaveDebugPublic\":false`,
+    String.raw`\"enclaveDebugPublic\":true`), source));
+  assert.throws(() => inject(lock.replace(String.raw`\"sensitivity\":\"confidential\"`,
+    String.raw`\"sensitivity\":\"public\"`), source));
+  assert.throws(() => inject(lock, source.replace('sensitivity: confidential', 'sensitivity: public')));
   assert(collection.includes('collect docker'));
   assert(!collection.includes("steps.collect-enclave-diagnostics.outcome == 'success'"));
   assert(!collection.includes('continue-on-error:'));
@@ -133,6 +151,31 @@ test('prepare precedes AWF and collection/upload run after failure without raw p
   assert(!source.includes('/usr/bin/node'));
   assert(!source.includes('command -v node'));
   assert(!source.includes('steps.prepare-enclave-diagnostics.outputs'));
+});
+
+test('all repository selectors and prompt policy agree with the bounded private response', () => {
+  const target = 'githubnext/gh-aw-enclave-demo-private';
+  assert(source.includes(`- \`privateRepo\`: \`${target}\``));
+  assert(source.includes(`allowed-repos: [${target}]`));
+  assert(lock.includes(`private:${target}`));
+  const hintLine = lock.match(/^\s+GH_AW_MCP_CLI_SERVERS_LIST: (".*")$/m)[1];
+  const hint = JSON.parse(hintLine);
+  assert(hint.includes(`\`${target}\` (\`confidential\`, not \`trusted\`) to an 8-bit per-run information budget`));
+  assert(!hint.includes('null per-run bit budget'));
+  const schema = JSON.parse(source.match(/```json\n([\s\S]*?)\n   ```/)[1]);
+  assert.deepEqual(schema, {
+    type: 'object',
+    fields: {
+      status: { type: 'enum', values: ['compatible', 'incompatible', 'unknown'] },
+      migration_needed: { type: 'boolean' },
+    },
+  });
+  const outcomes = schema.fields.status.values.flatMap(status =>
+    [false, true].map(migration_needed => ({ status, migration_needed })));
+  assert.equal(outcomes.length, 6);
+  assert.equal(1 + Math.ceil(Math.log2(outcomes.length)) + 4, 8);
+  assert(outcomes.every(value => Buffer.byteLength(JSON.stringify(value)) <= 64));
+  assert(1 + Math.ceil(Math.log2(9)) + 4 > 8);
 });
 
 const nodeInstaller = source.match(/<<'PY'\n([\s\S]*?)^      PY$/m)[1]
@@ -291,6 +334,10 @@ print(json.dumps({"cases": len(cases)}))
 });
 
 test('authored host lifecycle scripts agree with the compiled lock', () => {
+  const metadata = JSON.parse(lock.split('\n')[0].slice('# gh-aw-metadata: '.length));
+  const body = source.slice(source.indexOf('\n---\n') + '\n---\n'.length).trim();
+  assert.equal(metadata.body_hash, createHash('sha256').update(body).digest('hex'));
+  assert(lock.includes('{{#runtime-import .github/workflows/roadmap-triage-enclave.md}}'));
   const authoredRuns = [...source.matchAll(/^    run: \|\n((?:(?:      [^\n]*|)\n)+)/gm)]
     .map(match => match[1].split('\n').map(line => line.slice(6)).join('\n').trimEnd());
   const compiledRuns = [...lock.matchAll(/^        run: ("(?:[^"\\]|\\.)*")$/gm)]

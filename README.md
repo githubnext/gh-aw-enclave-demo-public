@@ -10,7 +10,7 @@ gh aw compile roadmap-triage-vulnerable --gh-aw-ref v1.0.1 --no-check-update
 ```
 
 The vulnerable workflow is unchanged and uses the compiler's default runtime
-versions. The enclave workflow uses **AWF v0.29.4**, preserving the authenticated
+versions. The enclave workflow uses **AWF v0.29.5**, preserving the authenticated
 Docker storage helper bridge from #57/#59. Its helper installation and shared
 collector lifecycle are now authored in `roadmap-triage-enclave.md`. Regenerate
 only that workflow, then apply the checked-in runtime injection:
@@ -19,6 +19,7 @@ only that workflow, then apply the checked-in runtime injection:
 gh aw version # Must report the official v1.0.1, not a development build.
 gh aw compile roadmap-triage-enclave --gh-aw-ref v1.0.1 --no-check-update
 node .github/aw/inject-enclave-runtime.cjs
+node .github/aw/inject-enclave-runtime.cjs --check
 node --test .github/aw/enclave-diagnostics.test.cjs
 ```
 
@@ -36,7 +37,7 @@ authored source. The workflow body is loaded from the `.md` source at runtime.
 
 **Enclave Dependency Check** is a public-target execution probe for
 `github/gh-aw-firewall` with `sensitivity: public`, not `trusted`. In
-[AWF v0.29.4's policy](https://github.com/github/gh-aw-firewall/blob/9596849bcdcefad2133ed484a97a77afd1baa038/src/types/enclave-options.ts),
+[AWF v0.29.5's policy](https://github.com/github/gh-aw-firewall/blob/3929c9a15c0f239b772affcaae6e55fec92f41c2/src/types/enclave-options.ts),
 `public` has a `null` per-run bit budget (no finite bit ceiling); the confidential
 8-bit ceiling does not apply. Free-form strings remain reserved for `trusted`
 repositories. This probe deliberately retains the six-outcome schema, 64-byte
@@ -48,6 +49,16 @@ runtime sensitivity. Network isolation and rootless AWF are preserved. Host
 elevation is limited to authenticated helper installation/probing and the
 upstream collector's authenticated interpreter installation, preparation and
 collection.
+
+The [v0.29.5 release](https://github.com/github/gh-aw-firewall/releases/tag/v0.29.5)
+includes [github/gh-aw-firewall#10940](https://github.com/github/gh-aw-firewall/pull/10940),
+which addresses [github/gh-aw-firewall#10939](https://github.com/github/gh-aw-firewall/issues/10939).
+It pre-extracts Copilot's native distribution during image construction, seals
+it root-owned and non-writable, and selects the fixed image runtime through
+`COPILOT_CLI_DIST_DIR` (including the explicit Cloud Hypervisor environment).
+Writable Docker invocation storage remains `noexec`; this upgrade does not
+relax that boundary or add a runtime-path override. Consuming the released
+fix is not evidence that hosted native loading has succeeded.
 
 The enclave workflow's scoped GitHub tools use `GH_AW_GITHUB_MCP_SERVER_TOKEN`
 or `GH_AW_GITHUB_TOKEN` with read access to the public target.
@@ -70,20 +81,32 @@ the explicit AWF exclusion for this host-only credential.
 ## Public enclave diagnostics
 
 The workflow consumes the maintained
-[`collect-enclave-smoke-debug.cjs`](https://github.com/github/gh-aw-firewall/blob/9596849bcdcefad2133ed484a97a77afd1baa038/scripts/ci/collect-enclave-smoke-debug.cjs)
-from v0.29.4, which includes
+[`collect-enclave-smoke-debug.cjs`](https://github.com/github/gh-aw-firewall/blob/3929c9a15c0f239b772affcaae6e55fec92f41c2/scripts/ci/collect-enclave-smoke-debug.cjs)
+from v0.29.5, which retains
 [github/gh-aw-firewall#10930](https://github.com/github/gh-aw-firewall/pull/10930).
-The release tag is commit `9596849bcdcefad2133ed484a97a77afd1baa038`, whose parent
-is the attested build source `564491e648e022be04aa96b73c1681f13f7544f8`; the
-collector is identical in both. Its SHA-256 is
+The release tag is commit `3929c9a15c0f239b772affcaae6e55fec92f41c2`, whose parent
+is the attested build source `bcfbba518a6498d8cf1b93f35c2008d6216f227f`; the
+collector and installer are byte-identical in both. The collector was also
+compared byte-for-byte with v0.29.4 and is unchanged. Its SHA-256 is
 `7722affc5c076d79692d4268a543ef267281424ad4b374eb8f80c24cbec08cae`.
-The official installer is pinned to the same commit and independently checksummed.
+The official installer is pinned to the same release commit with SHA-256
+`a6f844a1f1891bc4ddbb4b95c7d5cfd994e4f61aa1210ad655b36e92128b1202`.
 Both CLI installers authenticate `checksums.txt` and `release-identity.txt`,
 bind checksum digest
-`a2591185d010b1e220e3642b88d968acf79c119611f47af6c9d653a86d57a2e1`
-to `refs/tags/v0.29.4`, and remain rootless. All six AWF image digests are recorded
+`df77f6dd216030f6c604839136ccfed07b922690594db518a83ff3bcc555e788`
+to `refs/tags/v0.29.5`, and remain rootless. The released helper's SHA-256 is
+`648b2b0045cabc320362fabaa4ce6b42be7f340813c85fffc2bd0bc3c71f1d5c`;
+the authenticated installer checks it against the release checksum manifest
+before installation, and the workflow probes version `0.29.5`.
+All six AWF image digests are recorded
 in the injection source and were verified against the release-attested
-`containers.txt` and public GHCR tags.
+`containers.txt` and public GHCR tags. The manifest's SHA-256 is
+`52b79c57b3a7a95d5a0177be0882316d82ef137b977c26fbc544e1be242cec5b`;
+`release-identity.txt` has SHA-256
+`2f785482355241f1b0b53f5daf3c8fcb45e70eec25498a1646390300da770fcb`.
+These assets and the helper were verified with the public release workflow's
+GitHub-hosted, GitHub Actions OIDC attestations, whose build source is the parent
+commit above.
 
 The hosted Ubuntu 26.04 runner in
 [run 41255406408](https://github.com/githubnext/gh-aw-enclave-demo-public/actions/runs/41255406408)
@@ -147,11 +170,14 @@ links/files/ownership/permissions, and preserve the source/lock interpreter
 binding. Set `AWF_NODE_ARCHIVE_PATH` to the exact pinned x64 release archive to
 also exercise real archive authentication and extraction without execution.
 
-The fixture test verifies that script's exact SHA-256. The released upstream
-regression suite passed 181 platform-independent tests on macOS; five tests
-requiring Linux `/proc/self/fd` need a Linux runner. No hosted execution or
-artifact upload was dispatched or verified. A controlled eligible Docker failure
-and hosted upload remain the end-to-end acceptance gap. The earlier
+The fixture test verifies that script's exact SHA-256. The v0.29.5 upgrade passed
+all 11 focused tests on macOS, including 19 isolated Node bootstrap cases and
+11 public collector acceptance/rejection cases. Two official v1.0.1 compile/inject
+passes reproduced an identical lock; bridge `--check` also passed.
+Linux `/proc/self/fd` dispatcher tests, privileged helper installation and
+native Docker loading were not exercised on macOS. No hosted execution or
+artifact upload was dispatched or verified. A controlled eligible Docker failure,
+hosted native loading and hosted upload remain the end-to-end acceptance gap. The earlier
 [run](https://github.com/githubnext/gh-aw-enclave-demo-public/actions/runs/41232538301)
 does not prove an underlying execution cause or exact custom-exporter mismatch.
 

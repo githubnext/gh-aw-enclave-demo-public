@@ -27,12 +27,12 @@ pre-agent-steps:
       install_dir=$(mktemp -d "${RUNNER_TEMP}/awf-helper-install.XXXXXX")
       trap 'rm -f "$install_dir/install.sh" "$install_dir/checksums.txt" "$install_dir/release-identity.txt"; rmdir "$install_dir"' EXIT
       curl --proto '=https' --proto-redir '=https' -fsSL \
-        https://raw.githubusercontent.com/github/gh-aw-firewall/9596849bcdcefad2133ed484a97a77afd1baa038/install.sh \
+        https://raw.githubusercontent.com/github/gh-aw-firewall/3929c9a15c0f239b772affcaae6e55fec92f41c2/install.sh \
         -o "$install_dir/install.sh"
       printf '%s  %s\n' a6f844a1f1891bc4ddbb4b95c7d5cfd994e4f61aa1210ad655b36e92128b1202 "$install_dir/install.sh" | sha256sum -c -
       for asset in checksums.txt release-identity.txt; do
         curl --proto '=https' --proto-redir '=https' -fsSL \
-          "https://github.com/github/gh-aw-firewall/releases/download/v0.29.4/$asset" \
+          "https://github.com/github/gh-aw-firewall/releases/download/v0.29.5/$asset" \
           -o "$install_dir/$asset"
         gh attestation verify "$install_dir/$asset" --hostname github.com \
           --repo github/gh-aw-firewall \
@@ -40,14 +40,14 @@ pre-agent-steps:
           --cert-oidc-issuer https://token.actions.githubusercontent.com --deny-self-hosted-runners
       done
       checksums_sha256=$(sha256sum "$install_dir/checksums.txt" | cut -d ' ' -f1)
-      test "$checksums_sha256" = a2591185d010b1e220e3642b88d968acf79c119611f47af6c9d653a86d57a2e1
-      test "$(cat "$install_dir/release-identity.txt")" = "$checksums_sha256  refs/tags/v0.29.4"
+      test "$checksums_sha256" = df77f6dd216030f6c604839136ccfed07b922690594db518a83ff3bcc555e788
+      test "$(cat "$install_dir/release-identity.txt")" = "$checksums_sha256  refs/tags/v0.29.5"
       # Only setup is privileged; SUDO_UID authorizes this runner's narrow helper.
       sudo -n --preserve-env=GH_TOKEN,GH_HOST /usr/bin/env AWF_FORCE_BINARY=1 \
-        /bin/bash "$install_dir/install.sh" v0.29.4
+        /bin/bash "$install_dir/install.sh" v0.29.5
       /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/sudo -n -- \
-        /usr/bin/python3 -I /var/lib/awf/enclave-storage-helper.py probe 0.29.4 \
-        | /usr/bin/python3 -I -c 'import json, os, sys; p = json.load(sys.stdin); assert p == {"version": "0.29.4", "uid": os.getuid(), "maxBytes": 4 * 1024**3, "stateRoot": "/var/lib/awf/enclave-storage/" + str(os.getuid()) + "/host-state"}, p'
+        /usr/bin/python3 -I /var/lib/awf/enclave-storage-helper.py probe 0.29.5 \
+        | /usr/bin/python3 -I -c 'import json, os, sys; p = json.load(sys.stdin); assert p == {"version": "0.29.5", "uid": os.getuid(), "maxBytes": 4 * 1024**3, "stateRoot": "/var/lib/awf/enclave-storage/" + str(os.getuid()) + "/host-state"}, p'
   - name: Prepare public Docker enclave diagnostics
     id: prepare-enclave-diagnostics
     env:
@@ -120,7 +120,7 @@ pre-agent-steps:
           reject("archive-member")
       PY
       curl --proto '=https' --proto-redir '=https' -fsSL \
-        https://raw.githubusercontent.com/github/gh-aw-firewall/9596849bcdcefad2133ed484a97a77afd1baa038/scripts/ci/collect-enclave-smoke-debug.cjs \
+        https://raw.githubusercontent.com/github/gh-aw-firewall/3929c9a15c0f239b772affcaae6e55fec92f41c2/scripts/ci/collect-enclave-smoke-debug.cjs \
         -o "$install_dir/collector.cjs"
       printf '%s  %s\n' 7722affc5c076d79692d4268a543ef267281424ad4b374eb8f80c24cbec08cae "$install_dir/collector.cjs" | sha256sum -c -
       sudo -n install -m 0600 -o root -g root "$install_dir/collector.cjs" \
@@ -143,8 +143,8 @@ engine:
 sandbox:
   agent:
     id: awf
-    version: v0.29.4
-    checksums-sha256: a2591185d010b1e220e3642b88d968acf79c119611f47af6c9d653a86d57a2e1
+    version: v0.29.5
+    checksums-sha256: df77f6dd216030f6c604839136ccfed07b922690594db518a83ff3bcc555e788
     # gh-aw v1.0.1 needs .github/aw/inject-enclave-runtime.cjs after compilation
     # for public-debug capture, attested image pins and the rootless bridge.
 tools:
@@ -251,7 +251,7 @@ Before invoking the enclave:
    string field.
 
 5. Keep the response small for this execution probe, not for a disclosure-budget
-   bypass. AWF v0.29.4 sets the `public` per-run bit budget to `null` (no finite
+   bypass. AWF v0.29.5 sets the `public` per-run bit budget to `null` (no finite
    bit limit); the confidential repository's 8-bit limit does not apply here.
    The 64-byte output limit, finite schema validation, and single-invocation
    limit still apply.

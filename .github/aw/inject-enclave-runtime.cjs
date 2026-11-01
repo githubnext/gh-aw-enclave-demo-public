@@ -40,6 +40,14 @@ bash "\${RUNNER_TEMP}/gh-aw/actions/install_awf_binary.sh" ${version} \\
 
 const imageTag = [version.slice(1), ...Object.entries(images).map(([name, digest]) => `${name}=sha256:${digest}`)].join(',');
 function verifyInjected(lock) {
+  const installers = [...lock.matchAll(/^      - name: Install AWF binary\n[\s\S]*?(?=^      - |(?![\s\S]))/gm)];
+  assert.equal(installers.length, 2, 'Expected agent and detection installers');
+  for (const [step] of installers) {
+    assert.match(step, /^        env:\n(?:          [^\n]*\n)*          GH_TOKEN: \$\{\{ github.token \}\}$/m,
+      'AWF installer must bind its own GitHub token');
+    assert.match(step, /^        env:\n(?:          [^\n]*\n)*          GH_HOST: github\.com$/m,
+      'AWF installer must target the public release host');
+  }
   assert.equal(lock.split(String.raw`\"imageTag\":\"${imageTag}\"`).length - 1, 2, 'Runtime image pins drifted');
   assert.equal(lock.split(String.raw`\"enclaveDebugPublic\":true`).length - 1, 1, 'Public debug gate drifted');
   assert.equal(lock.split(authenticatedInstall.trimEnd().split('\n').map(part => `          ${part}`).join('\n')).length - 1,
@@ -109,11 +117,19 @@ function inject(lock, source) {
 
   let installers = 0;
   const installLine = `        run: bash "\${RUNNER_TEMP}/gh-aw/actions/install_awf_binary.sh" ${version} --checksums-sha256 ${checksums} --rootless`;
-  lock = lock.split('\n').map(line => {
-    if (line !== installLine) return line;
+  lock = lock.replace(/^      - name: Install AWF binary\n[\s\S]*?(?=^      - |(?![\s\S]))/gm, step => {
+    assert(step.includes(installLine), 'Unexpected AWF installer command');
     installers++;
-    return `        run: |\n${authenticatedInstall.trimEnd().split('\n').map(part => `          ${part}`).join('\n')}`;
-  }).join('\n');
+    step = step.replace(installLine,
+      `        run: |\n${authenticatedInstall.trimEnd().split('\n').map(part => `          ${part}`).join('\n')}`);
+    const env = step.match(/^        env:\n(?:          [^\n]*\n)*/m);
+    const bindings = '          GH_HOST: github.com\n          GH_TOKEN: ${{ github.token }}\n';
+    if (env) {
+      return step.replace(env[0],
+        env[0].replace(/^          GH_(?:HOST|TOKEN):[^\n]*\n/gm, '') + bindings);
+    }
+    return step + '        env:\n' + bindings;
+  });
   assert.equal(installers, 2, 'Expected two checksum-pinned rootless installers');
 
   let hints = 0;

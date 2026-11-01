@@ -551,6 +551,9 @@ jobs:
           test "$(cat "$install_dir/release-identity.txt")" = "$checksums_sha256  refs/tags/v0.29.4"
           bash "${RUNNER_TEMP}/gh-aw/actions/install_awf_binary.sh" v0.29.4 \
             --checksums-sha256 "$checksums_sha256" --rootless
+        env:
+          GH_HOST: github.com
+          GH_TOKEN: ${{ github.token }}
       - name: Determine automatic lockdown mode for GitHub MCP Server
         id: determine-automatic-lockdown
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -1800,6 +1803,9 @@ jobs:
           test "$(cat "$install_dir/release-identity.txt")" = "$checksums_sha256  refs/tags/v0.29.4"
           bash "${RUNNER_TEMP}/gh-aw/actions/install_awf_binary.sh" v0.29.4 \
             --checksums-sha256 "$checksums_sha256" --rootless
+        env:
+          GH_HOST: github.com
+          GH_TOKEN: ${{ github.token }}
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

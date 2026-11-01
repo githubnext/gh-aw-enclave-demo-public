@@ -1,6 +1,6 @@
 ---
 name: Enclave Dependency Check
-description: Probes public repository execution through a bounded agent enclave
+description: Releases a bounded dependency compatibility result through a confidential agent enclave
 strict: false
 on:
   roles: all
@@ -50,6 +50,8 @@ pre-agent-steps:
         | /usr/bin/python3 -I -c 'import json, os, sys; p = json.load(sys.stdin); assert p == {"version": "0.29.5", "uid": os.getuid(), "maxBytes": 4 * 1024**3, "stateRoot": "/var/lib/awf/enclave-storage/" + str(os.getuid()) + "/host-state"}, p'
   - name: Prepare public Docker enclave diagnostics
     id: prepare-enclave-diagnostics
+    # Public-only exporter is dormant for the confidential target.
+    if: "false"
     env:
       DEBUG_RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
     run: |
@@ -146,7 +148,7 @@ sandbox:
     version: v0.29.5
     checksums-sha256: df77f6dd216030f6c604839136ccfed07b922690594db518a83ff3bcc555e788
     # gh-aw v1.0.1 needs .github/aw/inject-enclave-runtime.cjs after compilation
-    # for public-debug capture, attested image pins and the rootless bridge.
+    # to disable public-debug capture, pin attested images and preserve rootless AWF.
 tools:
   github: false
 enclaves:
@@ -156,11 +158,11 @@ enclaves:
       tools:
         github:
           allowed: [list_issues, issue_read]
-          allowed-repos: [github/gh-aw-firewall]
+          allowed-repos: [githubnext/gh-aw-enclave-demo-private]
           min-integrity: none
     repos:
-      - repo: github/gh-aw-firewall
-        sensitivity: public
+      - repo: githubnext/gh-aw-enclave-demo-private
+        sensitivity: confidential
     timeout: 180
     max-output-bytes: 64
     max-invocations: 1
@@ -173,7 +175,7 @@ timeout-minutes: 10
 post-steps:
   - name: Collect public Docker enclave diagnostics
     id: collect-enclave-diagnostics
-    if: always() && steps.prepare-enclave-diagnostics.outcome == 'success'
+    if: "false"
     env:
       DEBUG_RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
       EXECUTION_OUTCOME: ${{ steps.agentic_execution.outcome }}
@@ -185,7 +187,7 @@ post-steps:
         /var/lib/awf-enclave-smoke-export/node /var/lib/awf-enclave-smoke-export/collector.cjs \
         collect docker "$DEBUG_RUN_KEY" "$(id -u)" "$(id -g)"
   - name: Upload validated public enclave diagnostics or safe collection status
-    if: always() && steps.prepare-enclave-diagnostics.outcome == 'success'
+    if: "false"
     uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
     with:
       name: public-enclave-debug-${{ github.run_id }}-${{ github.run_attempt }}
@@ -200,8 +202,8 @@ Review the complete triggering issue:
 
 ${{ steps.sanitized.outputs.text }}
 
-Answer the triggering question using information only from the public repository
-`github/gh-aw-firewall`, within the bounded enclave response described below.
+Answer the triggering question using information only from the private repository
+`githubnext/gh-aw-enclave-demo-private`, within the bounded enclave response described below.
 
 Have the enclave inspect relevant files in its configured checkout and use only
 `list_issues` and `issue_read` for relevant issues in that repository. File and
@@ -244,25 +246,24 @@ Before invoking the enclave:
    (`{"type": "enum", "values": [...]}` with unique values of one JSON type),
    `tuple` (`{"type": "tuple", "items": [...]}`), `array` (`{"type": "array",
    "items": <schema>, "length": N}` for a fixed length), and nested `object`.
-   This repository's enclave repo is `public`, not `trusted`, so do not use the
+   This repository's enclave repo is `confidential`, not `trusted`, so do not use the
    `string` type anywhere in the schema — free-form strings are reserved for
    `trusted` repositories only. Do not request source text, filenames, issue
    bodies, excerpts, summaries, or other repository content that would need a
    string field.
 
-5. Keep the response small for this execution probe, not for a disclosure-budget
-   bypass. AWF v0.29.5 sets the `public` per-run bit budget to `null` (no finite
-   bit limit); the confidential repository's 8-bit limit does not apply here.
-   The 64-byte output limit, finite schema validation, and single-invocation
-   limit still apply.
+5. Keep the schema inside the enclave's **8-bit per-run information budget**.
+   AWF v0.29.5 enforces this hard limit for `confidential` repositories before
+   the enclave agent runs. The 64-byte output limit, finite schema validation,
+   and single-invocation limit also apply.
 
    Every accepted invocation is charged `1 + ceil(log2(C)) + 4` bits, where
    `C` is the schema's total cardinality — the number of distinct responses it
    can express. The fixed `1 + 4` bits cover the ok/error status bit and the
    response-timing bucket, so **5 bits are spent before any field is
-   declared**. This accounting does not impose an 8-bit ceiling on the public
-   target. Nevertheless, keep **`C` at most 6** for this diagnostic, preserving
-   the small response shape rather than collecting additional repository data.
+   declared**. The 8-bit budget requires `ceil(log2(C)) <= 3`, so **`C` must
+   be at most 8**. This workflow retains the smaller **six-outcome schema**
+   rather than collecting additional repository data.
 
    Compute `C` by multiplying the cardinality of every field: `boolean` is 2,
    `enum` is its number of values, `integer` is `maximum - minimum + 1`,
@@ -272,7 +273,8 @@ Before invoking the enclave:
    Leave out confidence scores, percentages, counts, ratings, version numbers,
    and diagnostic text. Schema or execution failures can still return
    `{"status":"error"}`, and because `max-invocations: 1` the run has no second
-   chance. Public sensitivity does not guarantee detailed failure diagnostics.
+   chance. Public debug capture and export are disabled for this private target;
+   do not request or publish enclave stdout, stderr, sessions or private content.
 
    For example, a dependency-compatibility question can use:
 
@@ -287,14 +289,14 @@ Before invoking the enclave:
    ```
 
    That schema has cardinality `3 * 2 = 6`, so it is charged
-   `1 + ceil(log2(6)) + 4 = 8` bits, with no finite public bit ceiling. A response
+   `1 + ceil(log2(6)) + 4 = 8` bits and exactly fits the confidential budget. A response
    such as `{"status":"compatible","migration_needed":false}` is accepted.
 
-   For this probe, answer the single most valuable question rather than trying
+   Answer the single most valuable question rather than trying
    to cover every part of the issue. Do
    not widen the schema to collect extra detail. In the public comment, report
    the parts you deliberately left out as not determinable within the
-   diagnostic's deliberately bounded response.
+   enclave's disclosure budget.
 
 Invoke the enclave exactly once by passing a JSON object on standard input:
 
@@ -304,14 +306,13 @@ awf-enclave enclave_run_agent .
 
 The JSON object must contain:
 
-- `privateRepo`: `github/gh-aw-firewall` (AWF's API field name remains `privateRepo`
-  even for a public target)
+- `privateRepo`: `githubnext/gh-aw-enclave-demo-private`
 - `prompt`: the focused repository-research task
 - `schema`: the finite structured response schema, in AWF's `type`/`fields`
   dialect described above — never plain JSON Schema
 
 Keep the prompt within 4096 bytes and the expected response within 64 bytes and
-within the six-outcome diagnostic schema described above. Ask the enclave to return
+within the 8-bit information budget and six-outcome schema described above. Ask the enclave to return
 exactly one object matching the schema and nothing else.
 
 This workflow's enclave allows only one invocation (`max-invocations: 1`), and

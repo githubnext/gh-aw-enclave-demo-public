@@ -5,7 +5,7 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { test } = require('node:test');
 const { spawnSync } = require('node:child_process');
-const { inject, images, version, checksums } = require('./inject-enclave-runtime.cjs');
+const { inject, images, version, revision, checksums } = require('./inject-enclave-runtime.cjs');
 
 const base = path.resolve(__dirname, '../workflows/roadmap-triage-enclave');
 const source = fs.readFileSync(base + '.md', 'utf8');
@@ -32,7 +32,7 @@ test('both compiled AWF installers bind step-local attestation credentials', () 
 test('fresh injection preserves existing installer environment fields', () => {
   const compilerLock = lock
     .replace(/^# Enclave runtime bridge:[^\n]*\n/m, '')
-    .replaceAll(String.raw`\"imageTag\":\"${configs[0].container.imageTag}\"`, String.raw`\"imageTag\":\"0.29.4\"`)
+    .replaceAll(String.raw`\"imageTag\":\"${configs[0].container.imageTag}\"`, String.raw`\"imageTag\":\"${version.slice(1)}\"`)
     .replace(String.raw`\"enclaveDebugPublic\":true,`, '')
     .replace(/^(\s+GH_AW_MCP_CLI_SERVERS_LIST: )(".*")$/m, (_, prefix, value) =>
       prefix + JSON.stringify(JSON.parse(value).split('\n\nFor `awf-enclave enclave_run_agent`')[0]))
@@ -64,7 +64,7 @@ test('the lock preserves public policy, host-only credentials and rootless execu
   assert(lock.includes('--exclude-env GH_TOKEN'));
   assert(source.includes('excluded-env:\n  - GH_TOKEN'));
   assert.equal((lock.match(/--checksums-sha256 "\$checksums_sha256" --rootless/g) || []).length, 2);
-  assert.equal((lock.match(/refs\/tags\/v0\.29\.4/g) || []).length, 3);
+  assert.equal(lock.split(`refs/tags/${version}`).length - 1, 3);
   assert(!/sudo[^\n]*\bawf\s/.test(lock));
 });
 
@@ -78,15 +78,36 @@ test('all AWF images and manifest entries agree with authenticated release pins'
       Object.fromEntries(Object.entries(images).map(([name, digest]) => [name, `sha256:${digest}`])));
   }
   for (const [name, digest] of Object.entries(images)) {
-    const image = `ghcr.io/github/gh-aw-firewall/${name}:0.29.4`;
+    const image = `ghcr.io/github/gh-aw-firewall/${name}:${version.slice(1)}`;
     assert(manifest.containers.some(pin => pin.image === image
       && pin.pinned_image === `${image}@sha256:${digest}`));
   }
   const downloads = lock.split('\n').filter(line => line.includes('download_docker_images.sh'));
   assert.equal(downloads.length, 2);
   for (const line of downloads) {
-    assert(!/ghcr\.io\/github\/gh-aw-firewall\/[a-z-]+:0\.29\.4(?:\s|$)/.test(line));
-    assert(line.includes(`cli-proxy:0.29.4@sha256:${images['cli-proxy']}`));
+    assert(!/ghcr\.io\/github\/gh-aw-firewall\/[a-z-]+:[^\s@]+(?:\s|$)/.test(line));
+    assert(line.includes(`cli-proxy:${version.slice(1)}@sha256:${images['cli-proxy']}`));
+  }
+});
+
+test('helper and collector use the immutable release source and authenticated version binding', () => {
+  assert(source.includes(`https://raw.githubusercontent.com/github/gh-aw-firewall/${revision}/install.sh`));
+  assert(source.includes('a6f844a1f1891bc4ddbb4b95c7d5cfd994e4f61aa1210ad655b36e92128b1202'));
+  assert(source.includes(`https://raw.githubusercontent.com/github/gh-aw-firewall/${revision}/scripts/ci/collect-enclave-smoke-debug.cjs`));
+  assert(source.includes('7722affc5c076d79692d4268a543ef267281424ad4b374eb8f80c24cbec08cae'));
+  assert(source.includes(`test "$checksums_sha256" = ${checksums}`));
+  assert(source.includes(`refs/tags/${version}`));
+  assert(source.includes(`/bin/bash "$install_dir/install.sh" ${version}`));
+  assert(source.includes(`enclave-storage-helper.py probe ${version.slice(1)}`));
+  assert(source.includes(`{"version": "${version.slice(1)}", "uid": os.getuid()`));
+  assert(source.includes('sudo -n --preserve-env=GH_TOKEN,GH_HOST'));
+  for (const text of [source, lock]) {
+    const releases = [...text.matchAll(/(?:releases\/download\/|refs\/tags\/)(v[0-9.]+)/g)];
+    assert(releases.length > 0);
+    assert(releases.every(match => match[1] === version));
+    const revisions = [...text.matchAll(/raw\.githubusercontent\.com\/github\/gh-aw-firewall\/([a-f0-9]+)\//g)];
+    assert.equal(revisions.length, 2);
+    assert(revisions.every(match => match[1] === revision));
   }
 });
 
